@@ -16,8 +16,8 @@ services:
       - Jwt__Issuer=cms-api
       - Jwt__Audience=cms-users
       
-      # 3. If you switch Hangfire back to Redis later:
-      # - Redis__ConnectionString=redis_instance:6379
+      # 3. Redis Connection
+      - ConnectionStrings__Redis=redis_instance:6379
       
     networks:
       - shared_network

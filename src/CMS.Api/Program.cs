@@ -16,7 +16,8 @@ using Serilog.Events;
 using StackExchange.Redis;
 using System.Text;
 
-// ======================================
+// Load .env file
+DotNetEnv.Env.Load();
 
 // ======================================
 //    1. SETUP SERILOG (BEFORE BUILDER)
@@ -45,9 +46,6 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
-    // Load .env file
-    DotNetEnv.Env.Load();
-
     // Use Serilog as the logging provider
     builder.Host.UseSerilog();
 
@@ -69,8 +67,13 @@ try
     });
 
     // Redis Configuration (Critical for AOP Caching & Rate Limiting)
-    var redisConnectionString = builder.Configuration.GetConnectionString("Redis")
-        ?? "localhost:6379";
+    var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+
+    if (string.IsNullOrWhiteSpace(redisConnectionString))
+    {
+        redisConnectionString = "localhost:6379";
+        Log.Warning("Redis connection string is empty. Falling back to default: {RedisConnection}", redisConnectionString);
+    }
 
     Log.Information("Configuring Redis connection: {RedisConnection}", redisConnectionString);
 
@@ -266,7 +269,6 @@ try
         app.UseSwaggerUI(c =>
         {
             c.SwaggerEndpoint("/swagger/v1/swagger.json", "CMS API v1");
-            c.RoutePrefix = string.Empty; // Serve Swagger at root
         });
     }
 
