@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@latest/dist/browser/signalr.min.js"></script>
+</head>
+<body>
+    <h1>SignalR Test</h1>
+    <div id="messages"></div>
+    
+    <script>
+        const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NmEyNWQ4NS1hNTI5LTQzYzItODNiNC0yZmEwN2E0ZWZmMGQiLCJlbWFpbCI6Im1hbmFnZXIyQGV4YW1wbGUuY29tIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiRGVwYXJ0bWVudE1hbmFnZXIiLCJEZXBhcnRtZW50SWQiOiIwIiwiZXhwIjoxNzYzODQ4NjQxLCJpc3MiOiJjbXMtYXBpIiwiYXVkIjoiY21zLXVzZXJzIn0.GwPeHOsJfKt0U-eGEkrnmDMnfbzE6HnJZG7Rwf61gyg";
+        
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl(`http://localhost:5000/notifications?access_token=${token}`)
+            .withAutomaticReconnect()
+            .build();
+        
+        connection.on("ReceiveDepartmentMessage", (message) => {
+            console.log("Department message:", message);
+            document.getElementById("messages").innerHTML += `<p>📢 ${message}</p>`;
+        });
+        
+        connection.on("ReceiveNotification", (notification) => {
+            console.log("Notification:", notification);
+            document.getElementById("messages").innerHTML += `<p>🔔 ${notification.title}: ${notification.message}</p>`;
+        });
+        
+        connection.on("UnreadCountUpdated", (count) => {
+            console.log("Unread count:", count);
+        });
+        
+        connection.start()
+            .then(() => {
+                console.log("✅ Connected!");
+                document.getElementById("messages").innerHTML += "<p><b>✅ Connected to SignalR</b></p>";
+            })
+            .catch(err => console.error("❌ Connection error:", err));
+    </script>
+</body>
+</html>

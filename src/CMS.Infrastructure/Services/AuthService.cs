@@ -426,7 +426,10 @@ public class AuthService : IAuthService
             new Claim(JwtRegisteredClaimNames.Email, user.Email!),
             new Claim(ClaimTypes.Role, user.UserType.ToString()),
         };
-
+        if (user.Department.HasValue)
+        {
+            claims.Add(new Claim("DepartmentId", ((int)user.Department.Value).ToString()));
+        }
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]!));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 

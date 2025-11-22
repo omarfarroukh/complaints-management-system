@@ -2,6 +2,7 @@ using CMS.Api.Filters;
 using CMS.Api.Middleware;
 using CMS.Application.Interfaces;
 using CMS.Domain.Entities;
+using CMS.Infrastructure.Hubs;
 using CMS.Infrastructure.Persistence;
 using CMS.Infrastructure.Services;
 using Hangfire;
@@ -15,6 +16,7 @@ using Serilog;
 using Serilog.Events;
 using StackExchange.Redis;
 using System.Text;
+using CMS.Infrastructure.BackgroundJobs;
 
 // Load .env file
 DotNetEnv.Env.Load();
@@ -155,9 +157,23 @@ try
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
 
-        // Log authentication failures
+        // Log authentication failures and handle SignalR token from query string
         options.Events = new JwtBearerEvents
         {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+
+                // If the request is for our hub endpoint
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/notifications"))
+                {
+                    // Read the token out of the query string
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            },
             OnAuthenticationFailed = context =>
             {
                 Log.Warning("JWT authentication failed: {Error}", context.Exception.Message);
@@ -189,6 +205,19 @@ try
     builder.Services.AddScoped<IFileStorageService, LocalFileStorageService>();
     builder.Services.AddScoped<IRateLimitService, RateLimitService>();
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
+    builder.Services.AddScoped<IComplaintService, ComplaintService>();
+    builder.Services.AddScoped<IComplaintLockService, ComplaintLockService>();
+    builder.Services.AddScoped<INotificationService, NotificationService>();
+    builder.Services.AddScoped<INotificationJob, NotificationJob>();
+
+    // SignalR
+    // SignalR with keep-alive configuration
+    builder.Services.AddSignalR(options =>
+    {
+        options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
+        options.KeepAliveInterval = TimeSpan.FromSeconds(15);  // Changed from 30 to 15
+        options.HandshakeTimeout = TimeSpan.FromSeconds(30);
+    });
 
     // API Controllers with Global Filters
     builder.Services.AddControllers(options =>
@@ -243,10 +272,10 @@ try
     {
         options.AddPolicy("AllowFrontend", policy =>
         {
-            policy.WithOrigins("http://localhost:3000", "https://localhost:3000")
-                  .AllowAnyMethod()
-                  .AllowAnyHeader()
-                  .AllowCredentials();
+            policy.SetIsOriginAllowed(_ => true)  // Allow any origin (DEV ONLY!)
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+                .AllowCredentials();
         });
     });
 
@@ -328,6 +357,7 @@ try
 
     // 13. MAP CONTROLLERS
     app.MapControllers();
+    app.MapHub<NotificationHub>("/notifications");
 
     // Health check endpoint
     app.MapGet("/health", () => Results.Ok(new

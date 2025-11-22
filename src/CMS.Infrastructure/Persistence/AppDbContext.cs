@@ -20,6 +20,10 @@ namespace CMS.Infrastructure.Persistence
         public DbSet<UserProfile> UserProfiles { get; set; }
         public DbSet<AccountActivationToken> AccountActivationTokens { get; set; }
         public DbSet<LoginAttempt> LoginAttempts { get; set; }
+        public DbSet<Complaint> Complaints { get; set; }
+        public DbSet<ComplaintAttachment> ComplaintAttachments { get; set; }
+        public DbSet<ComplaintAuditLog> ComplaintAuditLogs { get; set; }
+        public DbSet<Notification> Notifications { get; set; }
 
         public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
         {
