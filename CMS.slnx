@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="CMS.Api/CMS.Api.csproj" />
+  <Project Path="CMS.Application/CMS.Application.csproj" />
+  <Project Path="CMS.Domain/CMS.Domain.csproj" />
+  <Project Path="CMS.Infrastructure/CMS.Infrastructure.csproj" />
+</Solution>

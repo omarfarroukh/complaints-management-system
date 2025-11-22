@@ -1,0 +1,5 @@
+**/.docker
+**/bin
+**/obj
+**/.vscode
+**/.git

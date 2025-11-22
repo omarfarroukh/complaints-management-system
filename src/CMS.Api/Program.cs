@@ -1,0 +1,386 @@
+using CMS.Api.Filters;
+using CMS.Api.Middleware;
+using CMS.Application.Interfaces;
+using CMS.Domain.Entities;
+using CMS.Infrastructure.Persistence;
+using CMS.Infrastructure.Services;
+using Hangfire;
+using Hangfire.MemoryStorage;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using Serilog;
+using Serilog.Events;
+using StackExchange.Redis;
+using System.Text;
+
+// ======================================
+
+// ======================================
+//    1. SETUP SERILOG (BEFORE BUILDER)
+// ======================================
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("System", LogEventLevel.Warning)
+    .MinimumLevel.Override("Hangfire", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore.Authentication", LogEventLevel.Information)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "CMS.Api")
+    .WriteTo.Console(outputTemplate:
+        "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}")
+    .WriteTo.Async(a => a.File(
+        path: "Logs/audit-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}"
+    ))
+    .CreateLogger();
+
+try
+{
+    Log.Information("🚀 Starting CMS API application...");
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    // Load .env file
+    DotNetEnv.Env.Load();
+
+    // Use Serilog as the logging provider
+    builder.Host.UseSerilog();
+
+    // ======================================
+    //      2. SERVICE REGISTRATION
+    // ======================================
+
+    // Database (PostgreSQL)
+    builder.Services.AddDbContext<AppDbContext>(options =>
+    {
+        options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
+
+        // Enable sensitive data logging in development only
+        if (builder.Environment.IsDevelopment())
+        {
+            options.EnableSensitiveDataLogging();
+            options.EnableDetailedErrors();
+        }
+    });
+
+    // Redis Configuration (Critical for AOP Caching & Rate Limiting)
+    var redisConnectionString = builder.Configuration.GetConnectionString("Redis")
+        ?? "localhost:6379";
+
+    Log.Information("Configuring Redis connection: {RedisConnection}", redisConnectionString);
+
+    // 1. Standard Distributed Cache (IDistributedCache) for general caching
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = redisConnectionString;
+        options.InstanceName = "CMS:";
+    });
+
+    // 2. Raw Redis Connection (IConnectionMultiplexer) for advanced operations
+    //    Required for: CachedAttribute tags/sets, Rate Limiting, Idempotency locks
+    builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+    {
+        try
+        {
+            var config = ConfigurationOptions.Parse(redisConnectionString);
+            config.AbortOnConnectFail = false; // Don't crash if Redis is temporarily down
+            config.ConnectTimeout = 5000;
+            config.SyncTimeout = 5000;
+
+            var redis = ConnectionMultiplexer.Connect(config);
+
+            Log.Information("✅ Redis connection established successfully");
+            return redis;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "❌ Failed to connect to Redis. Caching will be disabled.");
+            throw;
+        }
+    });
+
+    // Identity Configuration
+    builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+    {
+        // Password settings
+        options.Password.RequireDigit = true;
+        options.Password.RequiredLength = 8;
+        options.Password.RequireNonAlphanumeric = false;
+        options.Password.RequireUppercase = true;
+        options.Password.RequireLowercase = true;
+
+        // User settings
+        options.User.RequireUniqueEmail = true;
+        options.SignIn.RequireConfirmedEmail = true;
+
+        // Lockout settings (coordinated with RateLimitMiddleware)
+        options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
+        options.Lockout.MaxFailedAccessAttempts = 5;
+        options.Lockout.AllowedForNewUsers = true;
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddDefaultTokenProviders();
+
+    // JWT Authentication
+    var jwtKey = builder.Configuration["Jwt:Key"];
+    if (string.IsNullOrEmpty(jwtKey))
+    {
+        throw new InvalidOperationException("JWT Key is not configured in appsettings.json");
+    }
+
+    builder.Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ClockSkew = TimeSpan.Zero, // No tolerance for expired tokens
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+        };
+
+        // Log authentication failures
+        options.Events = new JwtBearerEvents
+        {
+            OnAuthenticationFailed = context =>
+            {
+                Log.Warning("JWT authentication failed: {Error}", context.Exception.Message);
+                return Task.CompletedTask;
+            }
+        };
+    });
+
+    // Hangfire (Background Jobs)
+    builder.Services.AddHangfire(config => config
+        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+        .UseSimpleAssemblyNameTypeSerializer()
+        .UseRecommendedSerializerSettings()
+        .UseMemoryStorage());
+
+    builder.Services.AddHangfireServer(options =>
+    {
+        options.WorkerCount = 2; // Limit concurrent background jobs
+    });
+
+    // HttpContext Access (required for getting IP addresses in services)
+    builder.Services.AddHttpContextAccessor();
+
+    // Application Services (Dependency Injection)
+    builder.Services.AddScoped<IAuthService, AuthService>();
+    builder.Services.AddScoped<IEmailService, SmtpEmailService>();
+    builder.Services.AddScoped<ISecurityService, SecurityService>();
+    builder.Services.AddScoped<IUserService, UserService>();
+    builder.Services.AddScoped<IFileStorageService, LocalFileStorageService>();
+    builder.Services.AddScoped<IRateLimitService, RateLimitService>();
+    builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
+
+    // API Controllers with Global Filters
+    builder.Services.AddControllers(options =>
+    {
+        // AOP: Apply validation globally to all endpoints
+        options.Filters.Add<ValidationFilterAttribute>();
+    });
+
+    builder.Services.AddEndpointsApiExplorer();
+
+    // Swagger Configuration
+    builder.Services.AddSwaggerGen(c =>
+    {
+        c.SwaggerDoc("v1", new OpenApiInfo
+        {
+            Title = "CMS API",
+            Version = "v1",
+            Description = "Content Management System API with AOP security features"
+        });
+
+        // JWT Bearer Authentication in Swagger
+        c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+        {
+            Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token.",
+            Name = "Authorization",
+            In = ParameterLocation.Header,
+            Type = SecuritySchemeType.ApiKey,
+            Scheme = "Bearer"
+        });
+
+        c.AddSecurityRequirement(new OpenApiSecurityRequirement()
+        {
+            {
+                new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference
+                    {
+                        Type = ReferenceType.SecurityScheme,
+                        Id = "Bearer"
+                    },
+                    Scheme = "oauth2",
+                    Name = "Bearer",
+                    In = ParameterLocation.Header,
+                },
+                new List<string>()
+            }
+        });
+    });
+
+    // CORS (if needed for frontend)
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AllowFrontend", policy =>
+        {
+            policy.WithOrigins("http://localhost:3000", "https://localhost:3000")
+                  .AllowAnyMethod()
+                  .AllowAnyHeader()
+                  .AllowCredentials();
+        });
+    });
+
+    var app = builder.Build();
+
+    // ======================================
+    //    3. MIDDLEWARE PIPELINE (ORDER IS CRITICAL!)
+    // ======================================
+
+    // 1. ERROR HANDLING - Must be first to catch all errors
+    app.UseMiddleware<ErrorHandlerMiddleware>();
+
+    // 2. REQUEST LOGGING - Log all requests early
+    app.UseMiddleware<RequestLogMiddleware>();
+
+    // Development tools
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI(c =>
+        {
+            c.SwaggerEndpoint("/swagger/v1/swagger.json", "CMS API v1");
+            c.RoutePrefix = string.Empty; // Serve Swagger at root
+        });
+    }
+
+    // 3. HTTPS Redirection (production only)
+    if (app.Environment.IsProduction())
+    {
+        app.UseHttpsRedirection();
+    }
+
+    // 4. SECURITY - IP Blacklist (block before rate limiting to save resources)
+    app.UseMiddleware<IpBlacklistMiddleware>();
+
+    // 5. RATE LIMITING - Prevent abuse
+    app.UseMiddleware<RateLimitMiddleware>();
+
+    // 6. STATIC FILES - Serve uploaded files
+    var webRootPath = app.Environment.WebRootPath
+        ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+
+    if (!Directory.Exists(webRootPath))
+    {
+        Directory.CreateDirectory(webRootPath);
+        Log.Information("Created wwwroot directory: {Path}", webRootPath);
+    }
+
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(webRootPath),
+        RequestPath = ""
+    });
+
+    // 7. CORS (if configured)
+    if (builder.Configuration.GetValue<bool>("EnableCors", false))
+    {
+        app.UseCors("AllowFrontend");
+    }
+
+    // 8. ROUTING
+    app.UseRouting();
+
+    // 9. AUTHENTICATION - Identify the user
+    app.UseAuthentication();
+
+    // 10. AUTHORIZATION - Check permissions
+    app.UseAuthorization();
+
+    // 11. IDEMPOTENCY - Handle duplicate POST/PUT/PATCH requests
+    //     (Must be AFTER auth to scope idempotency keys to users)
+    app.UseMiddleware<IdempotencyMiddleware>();
+
+    // 12. HANGFIRE DASHBOARD - Background job monitoring (protected)
+    app.UseHangfireDashboard("/hangfire", new DashboardOptions
+    {
+        Authorization = new[] { new HangfireAuthorizationFilter() },
+        DashboardTitle = "CMS Background Jobs"
+    });
+
+    // 13. MAP CONTROLLERS
+    app.MapControllers();
+
+    // Health check endpoint
+    app.MapGet("/health", () => Results.Ok(new
+    {
+        status = "healthy",
+        timestamp = DateTime.UtcNow
+    }));
+
+    // ======================================
+    //    4. BACKGROUND JOBS SETUP
+    // ======================================
+
+    // Schedule periodic cleanup jobs
+    RecurringJob.AddOrUpdate<ISecurityService>(
+        "cleanup-old-login-attempts",
+        service => service.CleanupOldLoginAttemptsAsync(30),
+        Cron.Daily); // Run daily
+
+    // ======================================
+    //    5. DATABASE INITIALIZATION
+    // ======================================
+
+    if (app.Environment.IsDevelopment())
+    {
+        using (var scope = app.Services.CreateScope())
+        {
+            try
+            {
+                var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                Log.Information("Running database migrations...");
+                await context.Database.MigrateAsync();
+
+                Log.Information("Seeding database...");
+                await DbSeeder.SeedUsersAsync(scope.ServiceProvider);
+
+                Log.Information("✅ Database initialization complete");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "❌ Database initialization failed");
+            }
+        }
+    }
+
+    Log.Information("✅ CMS API started successfully");
+    Log.Information("🌐 Listening on: {Urls}", string.Join(", ", app.Urls));
+
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "❌ Application start-up failed");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
