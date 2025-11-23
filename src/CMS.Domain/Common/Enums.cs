@@ -2,11 +2,14 @@ namespace CMS.Domain.Common
 {
     public enum ComplaintStatus
     {
-        Pending = 0,
-        Assigned = 1,
-        InProgress = 2,
-        Resolved = 3,
-        Closed = 4
+        Draft = 0,
+        Submitted = 1,
+        Pending = 2, // Alias for Submitted if needed, or keep distinct
+        Assigned = 3,
+        InProgress = 4,
+        Resolved = 5,
+        Closed = 6,
+        Rejected = 7
     }
 
     public enum ComplaintPriority

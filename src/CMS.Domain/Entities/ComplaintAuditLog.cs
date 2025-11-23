@@ -1,8 +1,11 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
 
 namespace CMS.Domain.Entities
 {
+    [Index(nameof(ComplaintId))]
+    [Index(nameof(Timestamp))]
     public class ComplaintAuditLog
     {
         [Key]

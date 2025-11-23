@@ -1,9 +1,11 @@
 using CMS.Application.DTOs;
 using CMS.Application.Interfaces;
 using CMS.Domain.Common;
+using CMS.Api.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using StackExchange.Redis;
 
 namespace CMS.Api.Controllers
 {
@@ -15,46 +17,48 @@ namespace CMS.Api.Controllers
         private readonly IComplaintService _complaintService;
         private readonly IComplaintLockService _lockService;
         private readonly ICurrentUserService _currentUserService;
+        private readonly IConnectionMultiplexer _redis;
 
         public ComplaintsController(
             IComplaintService complaintService,
             IComplaintLockService lockService,
-            ICurrentUserService currentUserService)
+            ICurrentUserService currentUserService,
+            IConnectionMultiplexer redis)
         {
             _complaintService = complaintService;
             _lockService = lockService;
             _currentUserService = currentUserService;
+            _redis = redis;
         }
 
         [HttpPost]
         [Authorize(Roles = "Citizen")]
+        [ServiceFilter(typeof(IdempotencyAttribute))]
         public async Task<IActionResult> CreateComplaint([FromBody] CreateComplaintDto request)
         {
             var userId = _currentUserService.UserId;
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-            var complaint = await _complaintService.CreateComplaintAsync(
-                request.Title,
-                request.Description,
-                request.DepartmentId,
-                userId);
+            var complaint = await _complaintService.CreateComplaintAsync(request, userId);
 
             return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, complaint);
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetComplaints([FromQuery] string? departmentId = null)
+        [ServiceFilter(typeof(CachedAttribute))]
+        public async Task<IActionResult> GetComplaints([FromQuery] ComplaintFilterDto filter)
         {
             var userId = _currentUserService.UserId;
             var role = User.FindFirst(ClaimTypes.Role)?.Value;
 
             if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(role)) return Unauthorized();
 
-            var complaints = await _complaintService.GetComplaintsForUserAsync(userId, role, departmentId);
+            var complaints = await _complaintService.GetComplaintsForUserAsync(userId, role, filter);
             return Ok(complaints);
         }
 
         [HttpGet("{id}")]
+        [ServiceFilter(typeof(CachedAttribute))]
         public async Task<IActionResult> GetComplaintById(Guid id)
         {
             var complaint = await _complaintService.GetComplaintByIdAsync(id);
@@ -71,7 +75,8 @@ namespace CMS.Api.Controllers
         }
 
         [HttpPut("{id}/assign")]
-        [Authorize(Roles = "Manager")]
+        [Authorize(Roles = "DepartmentManager")]
+        [ServiceFilter(typeof(IdempotencyAttribute))]
         public async Task<IActionResult> AssignComplaint(Guid id, [FromBody] AssignComplaintDto request)
         {
             var managerId = _currentUserService.UserId;
@@ -96,7 +101,8 @@ namespace CMS.Api.Controllers
         }
 
         [HttpPut("{id}/status")]
-        [Authorize(Roles = "Manager,Employee")]
+        [Authorize(Roles = "DepartmentManager,Employee")]
+        [ServiceFilter(typeof(IdempotencyAttribute))]
         public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateComplaintStatusDto request)
         {
             var userId = _currentUserService.UserId;
@@ -145,9 +151,76 @@ namespace CMS.Api.Controllers
 
             // Relative path for storage
             var relativePath = $"/uploads/complaints/{id}/{fileName}";
-            await _complaintService.AddAttachmentAsync(id, relativePath, file.FileName, userId);
+            await _complaintService.AddAttachmentAsync(id, relativePath, file.FileName, file.Length, file.ContentType, userId);
 
             return Ok(new { FilePath = relativePath });
+        }
+
+        [HttpPost("{id}/notes")]
+        [ServiceFilter(typeof(IdempotencyAttribute))]
+        public async Task<IActionResult> AddNote(Guid id, [FromBody] AddNoteDto request)
+        {
+            var userId = _currentUserService.UserId;
+            if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+            // Check Lock
+            if (!await _lockService.AcquireLockAsync(id, userId))
+            {
+                var holder = await _lockService.GetCurrentLockHolderAsync(id);
+                return Conflict($"Complaint is currently locked by user {holder}");
+            }
+
+            try
+            {
+                await _complaintService.AddNoteAsync(id, request.Note, userId);
+                return Ok(new { Message = "Note added successfully" });
+            }
+            finally
+            {
+                await _lockService.ReleaseLockAsync(id, userId);
+            }
+        }
+
+        [HttpGet("{id}/versions")]
+        [ServiceFilter(typeof(CachedAttribute))]
+        public async Task<IActionResult> GetVersions(Guid id)
+        {
+            var versions = await _complaintService.GetComplaintVersionsAsync(id);
+            return Ok(versions);
+        }
+
+        [HttpPatch("{id}")]
+        [ServiceFilter(typeof(IdempotencyAttribute))]
+        public async Task<IActionResult> PatchComplaint(Guid id, [FromBody] PatchComplaintDto request)
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var role = User.FindFirstValue(ClaimTypes.Role);
+            if (userId == null || role == null) return Unauthorized();
+
+            // Check Lock
+            if (!await _lockService.AcquireLockAsync(id, userId))
+            {
+                var holder = await _lockService.GetCurrentLockHolderAsync(id);
+                return Conflict($"Complaint is currently locked by user {holder}");
+            }
+
+            try
+            {
+                var updatedComplaint = await _complaintService.UpdateComplaintDetailsAsync(id, request, userId, role);
+                return Ok(updatedComplaint);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
+            }
+            finally
+            {
+                await _lockService.ReleaseLockAsync(id, userId);
+            }
         }
 
         [HttpPost("{id}/lock")]

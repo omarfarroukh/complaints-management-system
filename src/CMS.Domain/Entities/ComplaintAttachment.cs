@@ -23,5 +23,11 @@ namespace CMS.Domain.Entities
         public string UploadedByUserId { get; set; } = string.Empty;
 
         public DateTime UploadedOn { get; set; } = DateTime.UtcNow;
+
+        public long FileSize { get; set; }
+        public string MimeType { get; set; } = string.Empty;
+
+        public bool IsScanned { get; set; } = false;
+        public string? ScanResult { get; set; }
     }
 }

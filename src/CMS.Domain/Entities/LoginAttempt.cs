@@ -1,12 +1,18 @@
-namespace CMS.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
 
-public class LoginAttempt
+namespace CMS.Domain.Entities
 {
-    public int Id { get; set; }
-    public string Email { get; set; } = string.Empty;
-    public string? UserId { get; set; } // Nullable if user doesn't exist
-    public string IpAddress { get; set; } = string.Empty;
-    public bool Success { get; set; }
-    public string? FailureReason { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    [Index(nameof(IpAddress))]
+    [Index(nameof(Email))]
+    [Index(nameof(CreatedAt))]
+    public class LoginAttempt
+    {
+        public int Id { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public string? UserId { get; set; } // Nullable if user doesn't exist
+        public string IpAddress { get; set; } = string.Empty;
+        public bool Success { get; set; }
+        public string? FailureReason { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    }
 }

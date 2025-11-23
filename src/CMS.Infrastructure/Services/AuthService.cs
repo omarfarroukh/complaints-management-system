@@ -201,6 +201,7 @@ public class AuthService : IAuthService
     }
     public async Task<AuthResponseDto> RefreshTokenAsync(RefreshTokenDto dto)
     {
+        var hashedToken = HashToken(dto.RefreshToken);
         var storedToken = await _context.RefreshTokens
             .Include(r => r.User)
             .FirstOrDefaultAsync(x => x.Token == dto.RefreshToken);
@@ -442,14 +443,15 @@ public class AuthService : IAuthService
         );
 
         // 3. Generate Refresh Token
-        var refreshToken = new RefreshToken
+        var rawRefreshToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
+        var refreshTokenEntity = new RefreshToken
         {
-            Token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64)),
+            Token = HashToken(rawRefreshToken), // Store Hash
             UserId = user.Id,
             ExpiryDate = DateTime.UtcNow.AddDays(7)
         };
 
-        _context.RefreshTokens.Add(refreshToken);
+        _context.RefreshTokens.Add(refreshTokenEntity);
 
         // 4. Prevent User Table Lock
         _context.Entry(user).State = EntityState.Unchanged;
@@ -459,10 +461,16 @@ public class AuthService : IAuthService
         return new AuthResponseDto
         {
             Token = new JwtSecurityTokenHandler().WriteToken(token),
-            RefreshToken = refreshToken.Token,
+            RefreshToken = rawRefreshToken, // Return Raw Token to user
             Email = user.Email!,
             UserId = user.Id
         };
+    }
+    private string HashToken(string token)
+    {
+        using var sha256 = SHA256.Create();
+        var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(token));
+        return Convert.ToBase64String(bytes);
     }
 
     private string GetClientIpAddress()
