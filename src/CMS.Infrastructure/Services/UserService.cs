@@ -233,6 +233,9 @@ namespace CMS.Infrastructure.Services
 
         public async Task CompleteActivationAsync(CompleteActivationDto dto)
         {
+            if (dto.NewPassword != dto.ConfirmPassword)
+                throw new ApiException("Passwords do not match.");
+
             var userId = await _cache.GetStringAsync($"ACTIVATE_USER_{dto.TemporaryToken}");
             if (userId == null) throw new ApiException("Session expired");
 

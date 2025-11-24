@@ -52,6 +52,9 @@ public class AuthService : IAuthService
 
     public async Task<string> RegisterAsync(RegisterDto dto)
     {
+        if (dto.Password != dto.ConfirmPassword)
+            throw new ApiException("Passwords do not match.");
+
         // REMOVED: await _context.Database.BeginTransactionAsync(); 
         // The Controller's [Transactional] attribute now holds the DB lock.
 
@@ -285,6 +288,9 @@ public class AuthService : IAuthService
 
     public async Task ResetPasswordAsync(ResetPasswordDto dto)
     {
+        if (dto.NewPassword != dto.ConfirmPassword)
+            throw new ApiException("Passwords do not match.");
+
         var user = await _userManager.FindByEmailAsync(dto.Email);
         if (user == null) throw new ApiException("Invalid Request");
 
@@ -318,6 +324,9 @@ public class AuthService : IAuthService
 
     public async Task ChangePasswordAsync(string userId, ChangePasswordDto dto)
     {
+        if (dto.NewPassword != dto.ConfirmPassword)
+            throw new ApiException("Passwords do not match.");
+
         var user = await _userManager.FindByIdAsync(userId);
         if (user == null) throw new ApiException("User not found");
 

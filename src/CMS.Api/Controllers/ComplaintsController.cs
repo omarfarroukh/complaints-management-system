@@ -12,28 +12,34 @@ namespace CMS.Api.Controllers
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
+    [ValidationFilter]
     public class ComplaintsController : ControllerBase
     {
         private readonly IComplaintService _complaintService;
         private readonly IComplaintLockService _lockService;
         private readonly ICurrentUserService _currentUserService;
         private readonly IConnectionMultiplexer _redis;
+        private readonly IFileStorageService _fileStorageService;
 
         public ComplaintsController(
             IComplaintService complaintService,
             IComplaintLockService lockService,
             ICurrentUserService currentUserService,
-            IConnectionMultiplexer redis)
+            IConnectionMultiplexer redis,
+            IFileStorageService fileStorageService)
         {
             _complaintService = complaintService;
             _lockService = lockService;
             _currentUserService = currentUserService;
             _redis = redis;
+            _fileStorageService = fileStorageService;
         }
 
         [HttpPost]
         [Authorize(Roles = "Citizen")]
-        [ServiceFilter(typeof(IdempotencyAttribute))]
+        [Transactional]
+        [Idempotency]
+        [InvalidateCache("complaints")]
         public async Task<IActionResult> CreateComplaint([FromBody] CreateComplaintDto request)
         {
             var userId = _currentUserService.UserId;
@@ -45,7 +51,7 @@ namespace CMS.Api.Controllers
         }
 
         [HttpGet]
-        [ServiceFilter(typeof(CachedAttribute))]
+        [Cached(60, "complaints")]
         public async Task<IActionResult> GetComplaints([FromQuery] ComplaintFilterDto filter)
         {
             var userId = _currentUserService.UserId;
@@ -58,7 +64,7 @@ namespace CMS.Api.Controllers
         }
 
         [HttpGet("{id}")]
-        [ServiceFilter(typeof(CachedAttribute))]
+        [Cached(60, "complaints")]
         public async Task<IActionResult> GetComplaintById(Guid id)
         {
             var complaint = await _complaintService.GetComplaintByIdAsync(id);
@@ -76,7 +82,9 @@ namespace CMS.Api.Controllers
 
         [HttpPut("{id}/assign")]
         [Authorize(Roles = "DepartmentManager")]
-        [ServiceFilter(typeof(IdempotencyAttribute))]
+        [Transactional]
+        [Idempotency]
+        [InvalidateCache("complaints")]
         public async Task<IActionResult> AssignComplaint(Guid id, [FromBody] AssignComplaintDto request)
         {
             var managerId = _currentUserService.UserId;
@@ -102,7 +110,9 @@ namespace CMS.Api.Controllers
 
         [HttpPut("{id}/status")]
         [Authorize(Roles = "DepartmentManager,Employee")]
-        [ServiceFilter(typeof(IdempotencyAttribute))]
+        [Transactional]
+        [Idempotency]
+        [InvalidateCache("complaints")]
         public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateComplaintStatusDto request)
         {
             var userId = _currentUserService.UserId;
@@ -128,6 +138,8 @@ namespace CMS.Api.Controllers
         }
 
         [HttpPost("{id}/attachments")]
+        [Transactional]
+        [InvalidateCache("complaints")]
         public async Task<IActionResult> UploadAttachment(Guid id, IFormFile file)
         {
             var userId = _currentUserService.UserId;
@@ -136,28 +148,18 @@ namespace CMS.Api.Controllers
             if (file == null || file.Length == 0)
                 return BadRequest("No file uploaded.");
 
-            // Ensure directory exists
-            var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "complaints", id.ToString());
-            if (!Directory.Exists(uploadsFolder))
-                Directory.CreateDirectory(uploadsFolder);
+            // Use IFileStorageService to save the file
+            var relativePath = await _fileStorageService.SaveFileAsync(file.OpenReadStream(), file.FileName, $"complaints/{id}");
 
-            var fileName = Guid.NewGuid().ToString() + Path.GetExtension(file.FileName);
-            var filePath = Path.Combine(uploadsFolder, fileName);
-
-            using (var stream = new FileStream(filePath, FileMode.Create))
-            {
-                await file.CopyToAsync(stream);
-            }
-
-            // Relative path for storage
-            var relativePath = $"/uploads/complaints/{id}/{fileName}";
             await _complaintService.AddAttachmentAsync(id, relativePath, file.FileName, file.Length, file.ContentType, userId);
 
             return Ok(new { FilePath = relativePath });
         }
 
         [HttpPost("{id}/notes")]
-        [ServiceFilter(typeof(IdempotencyAttribute))]
+        [Transactional]
+        [Idempotency]
+        [InvalidateCache("complaints")]
         public async Task<IActionResult> AddNote(Guid id, [FromBody] AddNoteDto request)
         {
             var userId = _currentUserService.UserId;
@@ -182,7 +184,7 @@ namespace CMS.Api.Controllers
         }
 
         [HttpGet("{id}/versions")]
-        [ServiceFilter(typeof(CachedAttribute))]
+        [Cached(60)]
         public async Task<IActionResult> GetVersions(Guid id)
         {
             var versions = await _complaintService.GetComplaintVersionsAsync(id);
@@ -190,7 +192,9 @@ namespace CMS.Api.Controllers
         }
 
         [HttpPatch("{id}")]
-        [ServiceFilter(typeof(IdempotencyAttribute))]
+        [Transactional]
+        [Idempotency]
+        [InvalidateCache("complaints")]
         public async Task<IActionResult> PatchComplaint(Guid id, [FromBody] PatchComplaintDto request)
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);

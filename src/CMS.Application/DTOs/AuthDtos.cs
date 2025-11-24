@@ -5,17 +5,21 @@ namespace CMS.Application.DTOs;
 
 public class RegisterDto
 {
-    [Required] [EmailAddress] public string Email { get; set; } = string.Empty;
+    [Required][EmailAddress] public string Email { get; set; } = string.Empty;
     [Required] public string Password { get; set; } = string.Empty;
     [Required] public UserType UserType { get; set; }
-    
+
     // Nested Profile Object
     [Required] public ProfileInputDto Profile { get; set; } = new();
+
+    [Required]
+    [Compare("Password", ErrorMessage = "Passwords do not match.")]
+    public string ConfirmPassword { get; set; } = string.Empty;
 }
 
 public class LoginDto
 {
-    [Required] [EmailAddress] public string Email { get; set; } = string.Empty;
+    [Required][EmailAddress] public string Email { get; set; } = string.Empty;
     [Required] public string Password { get; set; } = string.Empty;
 
     public string? MfaCode { get; set; }
@@ -38,20 +42,28 @@ public class ConfirmEmailDto
 
 public class ForgotPasswordDto
 {
-    [Required] [EmailAddress] public string Email { get; set; } = string.Empty;
+    [Required][EmailAddress] public string Email { get; set; } = string.Empty;
 }
 
 public class ResetPasswordDto
 {
-    [Required] [EmailAddress] public string Email { get; set; } = string.Empty;
+    [Required][EmailAddress] public string Email { get; set; } = string.Empty;
     [Required] public string Token { get; set; } = string.Empty;
     [Required] public string NewPassword { get; set; } = string.Empty;
+
+    [Required]
+    [Compare("NewPassword", ErrorMessage = "Passwords do not match.")]
+    public string ConfirmPassword { get; set; } = string.Empty;
 }
 
 public class ChangePasswordDto
 {
     [Required] public string OldPassword { get; set; } = string.Empty;
     [Required] public string NewPassword { get; set; } = string.Empty;
+
+    [Required]
+    [Compare("NewPassword", ErrorMessage = "Passwords do not match.")]
+    public string ConfirmPassword { get; set; } = string.Empty;
 }
 
 public class RefreshTokenDto
