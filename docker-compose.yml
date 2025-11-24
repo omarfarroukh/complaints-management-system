@@ -2,27 +2,35 @@ services:
   cms_api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: src/CMS.Api/Dockerfile
     container_name: cms_api
     ports:
       - "5000:8080" # Maps localhost:5000 -> container:8080
     environment:
-      # 1. DB Host changed from 'localhost' to 'timescaledb_instance' (Container Name)
-      - ConnectionStrings__DefaultConnection=Host=timescaledb_instance;Database=cms_net_db;Username=shared_pg_user;Password=yH+tkZJUhnW5S3k;Pooling=true;Minimum Pool Size=10;Maximum Pool Size=200;
-      
-      # 2. Standard Configs
-      - ASPNETCORE_ENVIRONMENT=Development
-      - Jwt__Key=ThisIsASecretKeyForDevOnlyChangeItInProdToSomethingVeryLong
-      - Jwt__Issuer=cms-api
-      - Jwt__Audience=cms-users
-      
-      # 3. Redis Connection
-      - ConnectionStrings__Redis=redis_instance:6379
-      
+          # 1. Environment
+          - ASPNETCORE_ENVIRONMENT=${ASPNET_ENV}
+
+          # 2. Connection Strings
+          - ConnectionStrings__DefaultConnection=${CMS_DB_CONNECTION_STRING}
+          - ConnectionStrings__Redis=${REDIS_CONNECTION_STRING}
+          
+          # 3. JWT Configuration
+          - Jwt__Key=${JWT_SECRET}
+          - Jwt__Issuer=${JWT_ISSUER}
+          - Jwt__Audience=${JWT_AUDIENCE}
+
+          # 4. SMTP Settings
+          - SmtpSettings__Host=${SMTP_HOST}
+          - SmtpSettings__Port=${SMTP_PORT}
+          - SmtpSettings__SenderName=${SMTP_SENDER_NAME}
+          - SmtpSettings__SenderEmail=${SMTP_SENDER_EMAIL}
+          - SmtpSettings__Password=${SMTP_PASSWORD}
+
     networks:
       - shared_network
     volumes:
       - ./logs:/app/Logs 
+      - ./wwwroot_data:/app/wwwroot
 
 # This tells Docker: "Don't create a new network. Use the existing one named 'shared-services-network'"
 networks:

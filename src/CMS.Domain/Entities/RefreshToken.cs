@@ -1,9 +1,5 @@
-using Microsoft.EntityFrameworkCore;
-
 namespace CMS.Domain.Entities;
 
-[Index(nameof(Token))]
-[Index(nameof(UserId))]
 public class RefreshToken
 {
     public Guid Id { get; set; } = Guid.NewGuid();

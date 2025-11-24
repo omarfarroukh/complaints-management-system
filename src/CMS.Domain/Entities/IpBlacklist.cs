@@ -1,9 +1,5 @@
-using Microsoft.EntityFrameworkCore;
-
 namespace CMS.Domain.Entities
 {
-    [Index(nameof(IpAddress))]
-    [Index(nameof(CreatedAt))]
     public class IpBlacklist
     {
         public int Id { get; set; }

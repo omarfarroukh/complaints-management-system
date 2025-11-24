@@ -1,11 +1,8 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
-using Microsoft.EntityFrameworkCore;
 
 namespace CMS.Domain.Entities
 {
-    [Index(nameof(ComplaintId))]
-    [Index(nameof(Timestamp))]
     public class ComplaintAuditLog
     {
         [Key]
@@ -24,7 +21,6 @@ namespace CMS.Domain.Entities
 
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 
-        // Store serialized JSON of old/new values for detailed history
         public string? OldValues { get; set; }
         public string? NewValues { get; set; }
     }

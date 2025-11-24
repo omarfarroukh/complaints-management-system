@@ -43,7 +43,6 @@ namespace CMS.Application.DTOs
         public string Title { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
         public string DepartmentId { get; set; } = string.Empty;
-        public string Priority { get; set; } = "Low"; // Default
 
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }

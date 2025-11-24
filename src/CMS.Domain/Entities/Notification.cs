@@ -2,13 +2,8 @@ using CMS.Domain.Common;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-using Microsoft.EntityFrameworkCore;
-
 namespace CMS.Domain.Entities
 {
-    [Index(nameof(UserId))]
-    [Index(nameof(IsRead))]
-    [Index(nameof(CreatedOn))]
     public class Notification : AuditableEntity
     {
         [Key]
@@ -33,7 +28,6 @@ namespace CMS.Domain.Entities
 
         public DateTime? ReadAt { get; set; }
 
-        // Optional: Link to related entity (e.g., Complaint)
         [MaxLength(100)]
         public string? RelatedEntityType { get; set; }
 

@@ -18,8 +18,6 @@ using StackExchange.Redis;
 using System.Text;
 using CMS.Infrastructure.BackgroundJobs;
 
-// Load .env file
-DotNetEnv.Env.Load();
 
 // ======================================
 //    1. SETUP SERILOG (BEFORE BUILDER)

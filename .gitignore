@@ -203,6 +203,25 @@ yarn-error.log
 # Local History for Visual Studio Code
 .history/
 
+# ... (existing content) ...
+
 # Rider
 .idea/
 *.sln.iml
+
+# =========================
+# Custom Ignored Folders
+# =========================
+
+# Docker Volumes (User Uploads)
+wwwroot_data/
+
+# Application Logs
+logs/
+Logs/
+
+# If you ever create a local Postgres folder mapping
+postgres_data/
+timescaledb_data/
+redis_data/
+grafana_data/

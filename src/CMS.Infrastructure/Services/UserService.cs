@@ -6,6 +6,7 @@ using CMS.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Configuration; // Added
 using Hangfire;
 
 namespace CMS.Infrastructure.Services
@@ -16,24 +17,27 @@ namespace CMS.Infrastructure.Services
         private readonly AppDbContext _context;
         private readonly IEmailService _emailService;
         private readonly IDistributedCache _cache;
+        private readonly IConfiguration _configuration; // Added
 
         public UserService(
             UserManager<ApplicationUser> userManager,
             AppDbContext context,
             IEmailService emailService,
-            IDistributedCache cache)
+            IDistributedCache cache,
+            IConfiguration configuration) // Added
         {
             _userManager = userManager;
             _context = context;
             _emailService = emailService;
             _cache = cache;
+            _configuration = configuration;
         }
 
+        // [GetAllUsersAsync and GetUserByIdAsync remain unchanged]
         public async Task<List<UserDto>> GetAllUsersAsync(UserFilterDto filter)
         {
             var query = _context.Users.Include(u => u.Profile).AsQueryable();
 
-            // Filtering
             if (!string.IsNullOrEmpty(filter.SearchTerm))
             {
                 var term = filter.SearchTerm.ToLower();
@@ -56,12 +60,11 @@ namespace CMS.Infrastructure.Services
                 query = query.Where(u => u.IsActive == filter.IsActive.Value);
             }
 
-            // Sorting
             query = filter.SortBy?.ToLower() switch
             {
                 "email" => filter.IsDescending ? query.OrderByDescending(u => u.Email) : query.OrderBy(u => u.Email),
                 "role" => filter.IsDescending ? query.OrderByDescending(u => u.UserType) : query.OrderBy(u => u.UserType),
-                _ => query.OrderByDescending(u => u.Id) // Default sort
+                _ => query.OrderByDescending(u => u.Id) 
             };
 
             return await query
@@ -142,7 +145,10 @@ namespace CMS.Infrastructure.Services
 
             await _context.SaveChangesAsync();
 
-            var link = $"https://localhost:3000/activate?token={tokenStr}";
+            // FIX: Use Configuration for base URL
+            var baseUrl = _configuration["ClientApp:BaseUrl"] ?? "http://localhost:3000";
+            var link = $"{baseUrl}/activate?token={tokenStr}";
+            
             BackgroundJob.Enqueue<IEmailService>(x => x.SendEmailAsync(user.Email!, "Activate Account", $"Link: {link}"));
 
             return "User created. Activation email sent.";
@@ -172,7 +178,7 @@ namespace CMS.Infrastructure.Services
                 City = profile.City,
                 Country = profile.Country,
                 BirthDate = profile.BirthDate,
-                AvatarUrl = profile.AvatarUrl // Added this
+                AvatarUrl = profile.AvatarUrl
             };
         }
 

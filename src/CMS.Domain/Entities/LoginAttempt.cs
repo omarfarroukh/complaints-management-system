@@ -1,15 +1,10 @@
-using Microsoft.EntityFrameworkCore;
-
 namespace CMS.Domain.Entities
 {
-    [Index(nameof(IpAddress))]
-    [Index(nameof(Email))]
-    [Index(nameof(CreatedAt))]
     public class LoginAttempt
     {
         public int Id { get; set; }
         public string Email { get; set; } = string.Empty;
-        public string? UserId { get; set; } // Nullable if user doesn't exist
+        public string? UserId { get; set; } 
         public string IpAddress { get; set; } = string.Empty;
         public bool Success { get; set; }
         public string? FailureReason { get; set; }

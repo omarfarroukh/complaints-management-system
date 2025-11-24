@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using CMS.Application.Interfaces;
 using CMS.Api.Filters;
-using Microsoft.AspNetCore.Http;
+using CMS.Api.Helpers; // Added
 
 namespace CMS.Api.Controllers
 {
@@ -30,10 +30,8 @@ namespace CMS.Api.Controllers
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var profile = await _userService.GetProfileAsync(userId!);
 
-            if (!string.IsNullOrEmpty(profile.AvatarUrl))
-            {
-                profile.AvatarUrl = $"{Request.Scheme}://{Request.Host}{profile.AvatarUrl}";
-            }
+            // Simplified using Extension Method
+            profile.AvatarUrl = profile.AvatarUrl.ToAbsoluteUrl(Request);
 
             return Ok(new ApiResponse<UserProfileDto>(profile));
         }
@@ -57,15 +55,13 @@ namespace CMS.Api.Controllers
 
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
-            // 1. Upload file
             using var stream = file.OpenReadStream();
             var avatarUrl = await _fileStorageService.SaveFileAsync(stream, file.FileName, "avatars");
 
-            // 2. Update DB
             await _userService.UpdateAvatarAsync(userId!, avatarUrl);
 
-            // 3. Construct Full URL
-            var fullUrl = $"{Request.Scheme}://{Request.Host}{avatarUrl}";
+            // Simplified using Extension Method
+            var fullUrl = avatarUrl.ToAbsoluteUrl(Request);
 
             return Ok(new ApiResponse<string>(fullUrl, "Avatar uploaded successfully"));
         }
@@ -79,10 +75,7 @@ namespace CMS.Api.Controllers
 
             if (!string.IsNullOrEmpty(profile.AvatarUrl))
             {
-                // 1. Delete file
                 await _fileStorageService.DeleteFileAsync(profile.AvatarUrl);
-
-                // 2. Update DB
                 await _userService.UpdateAvatarAsync(userId!, null);
             }
 

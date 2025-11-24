@@ -5,7 +5,7 @@ namespace CMS.Application.Interfaces;
 public interface IAuthService
 {
     Task<string> RegisterAsync(RegisterDto dto);
-    Task<AuthResponseDto> LoginAsync(LoginDto dto);
+    Task<AuthResponseDto> LoginAsync(LoginDto dto, string ipAddress);
     // New methods
     Task<AuthResponseDto> RefreshTokenAsync(RefreshTokenDto dto);
     Task ConfirmEmailAsync(ConfirmEmailDto dto);

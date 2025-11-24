@@ -27,7 +27,7 @@ namespace CMS.Infrastructure.Services
                 DepartmentId = dto.DepartmentId,
                 CitizenId = citizenId,
                 Status = ComplaintStatus.Submitted, // Default to Submitted
-                Priority = Enum.TryParse<ComplaintPriority>(dto.Priority, out var p) ? p : ComplaintPriority.Low,
+                Priority =  ComplaintPriority.Low,
                 Latitude = dto.Latitude,
                 Longitude = dto.Longitude,
                 Address = dto.Address,
@@ -126,6 +126,7 @@ namespace CMS.Infrastructure.Services
             return await query
                 .Include(c => c.Citizen)
                 .Include(c => c.AssignedEmployee)
+                .Include(c => c.Attachments)
                 .Select(c => MapToDto(c))
                 .ToListAsync();
         }

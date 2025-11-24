@@ -19,12 +19,20 @@ public class AuthController : ControllerBase
         _authService = authService;
     }
 
+    // Helper to get IP from HTTP Context
+    private string GetIpAddress()
+    {
+        if (Request.Headers.ContainsKey("X-Forwarded-For"))
+            return Request.Headers["X-Forwarded-For"].ToString();
+            
+        return HttpContext.Connection.RemoteIpAddress?.MapToIPv4().ToString() ?? "Unknown";
+    }
+
     [HttpPost("register")]
     [Transactional]
     [InvalidateCache("users")]
     public async Task<IActionResult> Register([FromBody] RegisterDto dto)
     {
-        // No try-catch needed. Middleware handles errors.
         var message = await _authService.RegisterAsync(dto);
         return Ok(new ApiResponse<string>(message, "User registered successfully"));
     }
@@ -32,7 +40,9 @@ public class AuthController : ControllerBase
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginDto dto)
     {
-        var result = await _authService.LoginAsync(dto);
+        // Pass IP Address to Service here
+        var ip = GetIpAddress();
+        var result = await _authService.LoginAsync(dto, ip);
         return Ok(new ApiResponse<AuthResponseDto>(result, "Login Successful"));
     }
 
@@ -53,7 +63,6 @@ public class AuthController : ControllerBase
     [HttpPost("resend-confirmation")]
     public async Task<IActionResult> ResendConfirmation([FromBody] ForgotPasswordDto dto)
     {
-        // Reuse ForgotPasswordDto since it only contains Email
         await _authService.ResendConfirmationEmailAsync(dto.Email);
         return Ok(new ApiResponse<bool>(true, "If the email exists, a confirmation link has been sent."));
     }
@@ -72,21 +81,18 @@ public class AuthController : ControllerBase
         return Ok(new ApiResponse<bool>(true, "Password reset successfully"));
     }
 
-    [Authorize] // <--- Requires JWT Header
+    [Authorize]
     [HttpPost("change-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordDto dto)
     {
-        // 1. Get User ID securely from the Token
         var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
         if (string.IsNullOrEmpty(userId))
             return Unauthorized(new ApiResponse<string>("User ID missing from token"));
 
-        // 2. Call Service
         await _authService.ChangePasswordAsync(userId, dto);
         return Ok(new ApiResponse<bool>(true, "Password changed successfully"));
     }
-
 
     [Authorize]
     [HttpGet("mfa-setup")]
@@ -115,4 +121,3 @@ public class AuthController : ControllerBase
         return Ok(new ApiResponse<bool>(true, "MFA Disabled"));
     }
 }
-

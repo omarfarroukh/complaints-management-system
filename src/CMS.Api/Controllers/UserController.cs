@@ -5,8 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using CMS.Api.Filters;
 using CMS.Application.Interfaces;
-using CMS.Domain.Entities;
-using Microsoft.AspNetCore.Http;
+using CMS.Api.Helpers; // Added
 
 namespace CMS.Api.Controllers;
 
@@ -32,10 +31,8 @@ public class UsersController : ControllerBase
         var users = await _userService.GetAllUsersAsync(filter);
         foreach (var user in users)
         {
-            if (!string.IsNullOrEmpty(user.AvatarUrl))
-            {
-                user.AvatarUrl = $"{Request.Scheme}://{Request.Host}{user.AvatarUrl}";
-            }
+            // Simplified using Extension Method
+            user.AvatarUrl = user.AvatarUrl.ToAbsoluteUrl(Request);
         }
         return Ok(new ApiResponse<List<UserDto>>(users));
     }
@@ -47,22 +44,19 @@ public class UsersController : ControllerBase
         if (file == null || file.Length == 0)
             return BadRequest(new ApiResponse<string>("No file uploaded."));
 
-        // 1. Check User Role
         var user = await _userService.GetUserByIdAsync(id);
         if (user.Role == "Citizen")
         {
             return BadRequest(new ApiResponse<string>("Admins cannot upload avatars for Citizens."));
         }
 
-        // 2. Upload file
         using var stream = file.OpenReadStream();
         var avatarUrl = await _fileStorageService.SaveFileAsync(stream, file.FileName, "avatars");
 
-        // 3. Update DB
         await _userService.UpdateAvatarAsync(id, avatarUrl);
 
-        // 4. Construct Full URL
-        var fullUrl = $"{Request.Scheme}://{Request.Host}{avatarUrl}";
+        // Simplified using Extension Method
+        var fullUrl = avatarUrl.ToAbsoluteUrl(Request);
 
         return Ok(new ApiResponse<string>(fullUrl, "Avatar uploaded successfully"));
     }

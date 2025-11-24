@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using StackExchange.Redis;
+using CMS.Api.Helpers; // Added
 
 namespace CMS.Api.Controllers
 {
@@ -35,6 +36,19 @@ namespace CMS.Api.Controllers
             _fileStorageService = fileStorageService;
         }
 
+        // --- UPDATED HELPER METHOD ---
+        private void PrepareComplaintUrl(ComplaintDto complaint)
+        {
+            if (complaint.Attachments == null) return;
+
+            foreach (var attachment in complaint.Attachments)
+            {
+                // Use the static helper from CMS.Api.Helpers
+                attachment.FilePath = attachment.FilePath.ToAbsoluteUrl(Request) ?? string.Empty;
+            }
+        }
+        // -----------------------------
+
         [HttpPost]
         [Authorize(Roles = "Citizen")]
         [Transactional]
@@ -46,6 +60,7 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             var complaint = await _complaintService.CreateComplaintAsync(request, userId);
+            PrepareComplaintUrl(complaint);
 
             return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, complaint);
         }
@@ -60,6 +75,8 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(role)) return Unauthorized();
 
             var complaints = await _complaintService.GetComplaintsForUserAsync(userId, role, filter);
+            complaints.ForEach(PrepareComplaintUrl);
+
             return Ok(complaints);
         }
 
@@ -70,12 +87,12 @@ namespace CMS.Api.Controllers
             var complaint = await _complaintService.GetComplaintByIdAsync(id);
             if (complaint == null) return NotFound();
 
-            // Check access rights (simplified)
             var userId = _currentUserService.UserId;
             var role = User.FindFirst(ClaimTypes.Role)?.Value;
 
             if (role == "Citizen" && complaint.CitizenId != userId) return Forbid();
-            // Employees/Managers can view (add more strict checks if needed)
+
+            PrepareComplaintUrl(complaint);
 
             return Ok(complaint);
         }
@@ -90,7 +107,6 @@ namespace CMS.Api.Controllers
             var managerId = _currentUserService.UserId;
             if (string.IsNullOrEmpty(managerId)) return Unauthorized();
 
-            // Check Lock
             if (!await _lockService.AcquireLockAsync(id, managerId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
@@ -118,7 +134,6 @@ namespace CMS.Api.Controllers
             var userId = _currentUserService.UserId;
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-            // Check Lock
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
@@ -148,12 +163,12 @@ namespace CMS.Api.Controllers
             if (file == null || file.Length == 0)
                 return BadRequest("No file uploaded.");
 
-            // Use IFileStorageService to save the file
             var relativePath = await _fileStorageService.SaveFileAsync(file.OpenReadStream(), file.FileName, $"complaints/{id}");
 
             await _complaintService.AddAttachmentAsync(id, relativePath, file.FileName, file.Length, file.ContentType, userId);
 
-            return Ok(new { FilePath = relativePath });
+            // Use Helper
+            return Ok(new { FileUrl = relativePath.ToAbsoluteUrl(Request) });
         }
 
         [HttpPost("{id}/notes")]
@@ -165,7 +180,6 @@ namespace CMS.Api.Controllers
             var userId = _currentUserService.UserId;
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-            // Check Lock
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
@@ -201,7 +215,6 @@ namespace CMS.Api.Controllers
             var role = User.FindFirstValue(ClaimTypes.Role);
             if (userId == null || role == null) return Unauthorized();
 
-            // Check Lock
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
@@ -211,6 +224,7 @@ namespace CMS.Api.Controllers
             try
             {
                 var updatedComplaint = await _complaintService.UpdateComplaintDetailsAsync(id, request, userId, role);
+                PrepareComplaintUrl(updatedComplaint);
                 return Ok(updatedComplaint);
             }
             catch (InvalidOperationException ex)
