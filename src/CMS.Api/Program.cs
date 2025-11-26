@@ -17,7 +17,7 @@ using Serilog.Events;
 using StackExchange.Redis;
 using System.Text;
 using CMS.Infrastructure.BackgroundJobs;
-
+using System.Reflection;
 
 // ======================================
 //    1. SETUP SERILOG (BEFORE BUILDER)
@@ -207,6 +207,8 @@ try
     builder.Services.AddScoped<IComplaintLockService, ComplaintLockService>();
     builder.Services.AddScoped<INotificationService, NotificationService>();
     builder.Services.AddScoped<INotificationJob, NotificationJob>();
+    builder.Services.AddScoped<IDashboardService, DashboardService>();
+    builder.Services.AddSingleton<SseService>();
 
     // SignalR
     // SignalR with keep-alive configuration
@@ -227,14 +229,33 @@ try
     builder.Services.AddEndpointsApiExplorer();
 
     // Swagger Configuration
+    // Swagger Configuration
+    // Swagger Configuration
     builder.Services.AddSwaggerGen(c =>
     {
         c.SwaggerDoc("v1", new OpenApiInfo
         {
             Title = "CMS API",
             Version = "v1",
-            Description = "Content Management System API with AOP security features"
+            Description = "Content Management System API with comprehensive documentation, AOP security features, and idempotency support",
+            Contact = new OpenApiContact
+            {
+                Name = "CMS Development Team",
+                Email = "support@cms-api.com"
+            }
         });
+
+        // Enable XML documentation comments
+        var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+        var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+        if (File.Exists(xmlPath))
+        {
+            c.IncludeXmlComments(xmlPath);
+        }
+
+        // Add custom filters
+        c.SchemaFilter<CMS.Api.Swagger.DateTimeExampleFilter>();
+        c.OperationFilter<CMS.Api.Swagger.IdempotencyHeaderFilter>();
 
         // JWT Bearer Authentication in Swagger
         c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -264,6 +285,7 @@ try
             }
         });
     });
+
 
     // CORS (if needed for frontend)
     builder.Services.AddCors(options =>
