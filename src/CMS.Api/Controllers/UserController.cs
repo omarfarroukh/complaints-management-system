@@ -12,7 +12,6 @@ namespace CMS.Api.Controllers;
 /// <summary>
 /// User management operations (Admin only)
 /// </summary>
-[Authorize(Roles = "Admin")]
 [ApiController]
 [NotifyDashboard("Admin")]
 [Route("api/[controller]")]
@@ -31,9 +30,13 @@ public class UsersController : ControllerBase
     /// Get all users with optional filtering
     /// </summary>
     /// <remarks>
-    /// **Authorization:** Admin role required
+    /// **Authorization:** Admin or DepartmentManager role required
     /// 
     /// Returns a list of all non-citizen users (Employees, Managers, Admins) with optional filtering.
+    /// 
+    /// **Access Control:**
+    /// - Admins: Can view all users across all departments
+    /// - Department Managers: Can only view users within their own department
     /// 
     /// **Filtering Options:**
     /// - Role (Employee, DepartmentManager, Admin)
@@ -55,8 +58,9 @@ public class UsersController : ControllerBase
     /// <returns>List of users matching the filter criteria</returns>
     /// <response code="200">Users retrieved successfully</response>
     /// <response code="401">Not authenticated</response>
-    /// <response code="403">Not authorized (requires Admin role)</response>
+    /// <response code="403">Not authorized (requires Admin or DepartmentManager role)</response>
     [HttpGet]
+    [Authorize(Roles = "Admin,DepartmentManager")]
     [Transactional]
     [Cached(60, "users", IsShared = true)]
     [ProducesResponseType(typeof(ApiResponse<List<UserDto>>), StatusCodes.Status200OK)]
@@ -64,7 +68,10 @@ public class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetAll([FromQuery] UserFilterDto filter)
     {
-        var users = await _userService.GetAllUsersAsync(filter);
+        var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+        var users = await _userService.GetAllUsersAsync(filter, userId, userRole);
         foreach (var user in users)
         {
             // Convert relative avatar URLs to absolute URLs
@@ -106,6 +113,7 @@ public class UsersController : ControllerBase
     /// <response code="403">Not authorized (requires Admin role)</response>
     /// <response code="404">User not found</response>
     [HttpPost("{id}/avatar")]
+    [Authorize(Roles = "Admin")]
     [InvalidateCache("users", "profiles")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status400BadRequest)]
@@ -170,6 +178,7 @@ public class UsersController : ControllerBase
     /// <response code="403">Not authorized (requires Admin role)</response>
     [HttpPost("employee")]
     [InvalidateCache("users")]
+    [Authorize(Roles = "Admin")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -222,6 +231,7 @@ public class UsersController : ControllerBase
     [HttpPost("manager")]
     [Transactional]
     [InvalidateCache("users")]
+    [Authorize(Roles = "Admin")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]

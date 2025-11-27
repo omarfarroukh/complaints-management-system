@@ -34,15 +34,30 @@ namespace CMS.Infrastructure.Services
         }
 
         // [GetAllUsersAsync and GetUserByIdAsync remain unchanged]
-        public async Task<List<UserDto>> GetAllUsersAsync(UserFilterDto filter)
+        public async Task<List<UserDto>> GetAllUsersAsync(UserFilterDto filter, string? userId = null, string? userRole = null)
         {
             var query = _context.Users.Include(u => u.Profile).AsQueryable();
+
+            // If the caller is a department manager, restrict to their department
+            if (userRole == "DepartmentManager" && !string.IsNullOrEmpty(userId))
+            {
+                var manager = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+                if (manager?.Department != null)
+                {
+                    query = query.Where(u => u.Department == manager.Department);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(userId))
+            {
+                query = query.Where(u => u.Id != userId);
+            }
 
             if (!string.IsNullOrEmpty(filter.SearchTerm))
             {
                 var term = filter.SearchTerm.ToLower();
                 query = query.Where(u => u.Email!.ToLower().Contains(term) ||
-                                         (u.Profile != null && (u.Profile.FirstName.ToLower().Contains(term) || u.Profile.LastName.ToLower().Contains(term))));
+                                        (u.Profile != null && (u.Profile.FirstName.ToLower().Contains(term) || u.Profile.LastName.ToLower().Contains(term))));
             }
 
             if (!string.IsNullOrEmpty(filter.Role) && Enum.TryParse<UserType>(filter.Role, true, out var role))

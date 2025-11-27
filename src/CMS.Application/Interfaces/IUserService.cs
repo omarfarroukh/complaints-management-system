@@ -4,7 +4,7 @@ namespace CMS.Application.Interfaces
 {
     public interface IUserService
     {
-        Task<List<UserDto>> GetAllUsersAsync(UserFilterDto filter);
+        Task<List<UserDto>> GetAllUsersAsync(UserFilterDto filter, string? userId = null, string? userRole = null);
         Task<UserDto> GetUserByIdAsync(string id);
 
         // User Creation
