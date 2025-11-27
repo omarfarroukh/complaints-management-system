@@ -92,7 +92,11 @@ public class AuthService : IAuthService
 
         return "User registered successfully. Please check your email for the verification code.";
     }
-
+    public async Task<bool> IsEmailUsedAsync(string email)
+    {
+        var user = await _userManager.FindByEmailAsync(email);
+        return user != null;
+    }
     public async Task<AuthResponseDto> LoginAsync(LoginDto dto, string ipAddress)
     {
 

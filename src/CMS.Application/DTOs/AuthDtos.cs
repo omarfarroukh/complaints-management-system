@@ -82,3 +82,9 @@ public class MfaVerifyDto
 {
     [Required] public string Code { get; set; } = string.Empty;
 }
+
+
+public class CheckEmailResponseDto
+{
+    public bool IsEmailUsed { get; set; }
+}

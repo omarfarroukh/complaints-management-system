@@ -9,17 +9,12 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using CMS.Api.Filters;
-using CMS.Application.Wrappers;
+using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
+using CMS.Api.Filters;
 
 namespace CMS.Api.Middleware
 {
-    /// <summary>
-    /// Middleware that provides idempotency support by caching successful responses keyed by an Idempotency-Key header.
-    /// It now supports a configurable maximum response size and optional GZip compression to reduce Redis storage.
-    /// Includes distributed locking to prevent race conditions.
-    /// </summary>
     public class IdempotencyMiddleware
     {
         private readonly RequestDelegate _next;
@@ -41,7 +36,6 @@ namespace CMS.Api.Middleware
 
         public async Task InvokeAsync(HttpContext context)
         {
-            // Retrieve the attribute that marks an endpoint as idempotent.
             var endpoint = context.GetEndpoint();
             var idempotencyAttribute = endpoint?.Metadata.GetMetadata<IdempotencyAttribute>();
 
@@ -51,167 +45,128 @@ namespace CMS.Api.Middleware
                 return;
             }
 
-            // Only apply to non-idempotent HTTP methods (POST, PATCH, PUT)
             if (!IsNonIdempotentMethod(context.Request.Method))
             {
                 await _next(context);
                 return;
             }
 
-            // Ensure the Idempotency-Key header is present.
             if (!context.Request.Headers.TryGetValue("Idempotency-Key", out var idempotencyKey) 
                 || string.IsNullOrWhiteSpace(idempotencyKey))
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await context.Response.WriteAsJsonAsync(new ApiResponse<string>
-                {
-                    Succeeded = false,
-                    Message = "Idempotency-Key header is required for this operation"
-                });
+                await context.Response.WriteAsJsonAsync(new { succeeded = false, message = "Idempotency-Key header is required" });
                 return;
             }
 
-            // Build a cache key that is optionally scoped to the authenticated user.
+            // Compute request payload hash
+            string requestPayloadHash = await ComputeRequestHashAsync(context.Request);
+
+            // Build cache key
             var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var cacheKey = string.IsNullOrEmpty(userId)
                 ? $"Idempotency:{idempotencyKey}"
                 : $"Idempotency:{userId}:{idempotencyKey}";
-
+            
             var lockKey = $"{cacheKey}:lock";
 
-            // Load configuration values (with sensible defaults).
-            var maxResponseSizeKb = _configuration.GetValue<int>("Idempotency:MaxResponseSizeKb", 1024); // default 1 MB
+            // Load configuration
+            var maxResponseSizeKb = _configuration.GetValue<int>("Idempotency:MaxResponseSizeKb", 1024);
             var enableCompression = _configuration.GetValue<bool>("Idempotency:EnableCompression", true);
             var storeFullResponse = _configuration.GetValue<bool>("Idempotency:StoreFullResponse", true);
             var lockTimeoutSeconds = _configuration.GetValue<int>("Idempotency:LockTimeoutSeconds", 30);
 
-            // Get Redis connection for distributed locking
+            // Acquire distributed lock
             var redis = context.RequestServices.GetService<IConnectionMultiplexer>();
             if (redis == null)
             {
-                _logger.LogWarning("Redis connection not available for idempotency locking");
+                _logger.LogWarning("Redis not available for idempotency locking");
                 await _next(context);
                 return;
             }
 
             var db = redis.GetDatabase();
-
-            // Try to acquire distributed lock to prevent race conditions
-            var lockAcquired = await db.StringSetAsync(
-                lockKey, 
-                "locked", 
-                TimeSpan.FromSeconds(lockTimeoutSeconds), 
-                When.NotExists);
+            var lockAcquired = await db.StringSetAsync(lockKey, "locked", TimeSpan.FromSeconds(lockTimeoutSeconds), When.NotExists);
 
             if (!lockAcquired)
             {
-                // Another request is currently processing this idempotency key
-                _logger.LogWarning(
-                    "Concurrent request detected for idempotency key: {IdempotencyKey}", 
-                    idempotencyKey.ToString());
-                
                 context.Response.StatusCode = StatusCodes.Status409Conflict;
-                await context.Response.WriteAsJsonAsync(new ApiResponse<string>
-                {
-                    Succeeded = false,
-                    Message = "This request is currently being processed. Please wait."
-                });
+                await context.Response.WriteAsJsonAsync(new { succeeded = false, message = "Request already being processed" });
                 return;
             }
 
             try
             {
-                // Try to serve a cached response.
-                var cachedResponse = await _cache.GetStringAsync(cacheKey);
-                if (!string.IsNullOrEmpty(cachedResponse))
-                {
-                    IdempotencyResponse? responseData = null;
-                    try
-                    {
-                        if (enableCompression)
-                        {
-                            var compressedBytes = Convert.FromBase64String(cachedResponse);
-                            using var ms = new MemoryStream(compressedBytes);
-                            using var gzip = new GZipStream(ms, CompressionMode.Decompress);
-                            using var reader = new StreamReader(gzip);
-                            var decompressed = await reader.ReadToEndAsync();
-                            responseData = JsonSerializer.Deserialize<IdempotencyResponse>(decompressed);
-                        }
-                        else
-                        {
-                            responseData = JsonSerializer.Deserialize<IdempotencyResponse>(cachedResponse);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(
-                            ex, 
-                            "Failed to deserialize cached idempotent response for key {IdempotencyKey}", 
-                            idempotencyKey.ToString());
-                    }
+                // In the try block, replace the cached response handling:
 
-                    if (responseData != null)
+                var cachedValue = await _cache.GetStringAsync(cacheKey);
+                if (!string.IsNullOrEmpty(cachedValue))
+                {
+                    var cacheEntry = DeserializeCacheEntry(cachedValue, enableCompression);
+                    
+                    // Check if cache entry exists and hash matches
+                    if (cacheEntry?.RequestPayloadHash == requestPayloadHash)
                     {
-                        _logger.LogInformation(
-                            "Returning cached idempotent response for key {IdempotencyKey}", 
-                            idempotencyKey.ToString());
-                        
-                        context.Response.StatusCode = responseData.StatusCode;
-                        context.Response.ContentType = responseData.ContentType;
-                        await context.Response.WriteAsync(responseData.Body);
+                        // Null-forgiving operator is safe here - a valid entry must have Response
+                        context.Response.StatusCode = cacheEntry.Response!.StatusCode;
+                        context.Response.ContentType = cacheEntry.Response.ContentType;
+                        await context.Response.WriteAsync(cacheEntry.Response.Body);
                         return;
                     }
+                    else if (cacheEntry != null)
+                    {
+                        // Entry exists but hash mismatch
+                        context.Response.StatusCode = StatusCodes.Status409Conflict;
+                        await context.Response.WriteAsJsonAsync(new 
+                        { 
+                            succeeded = false, 
+                            message = "Idempotency key used with different request payload" 
+                        });
+                        return;
+                    }
+                    // If cacheEntry is null (corrupted), fall through to process request
                 }
 
-                // No cached response – capture the outgoing response.
+                // Process request and capture response
                 var originalBodyStream = context.Response.Body;
                 await using var memoryStream = new MemoryStream();
                 context.Response.Body = memoryStream;
 
                 await _next(context);
 
-                // Read the response body.
                 memoryStream.Position = 0;
                 var responseBody = await new StreamReader(memoryStream).ReadToEndAsync();
                 
-                // Reset the stream position and copy back to the original response body.
                 memoryStream.Position = 0;
                 await memoryStream.CopyToAsync(originalBodyStream);
                 context.Response.Body = originalBodyStream;
 
-                // Cache only successful (2xx) responses.
-                if (context.Response.StatusCode >= 200 && context.Response.StatusCode < 300)
+                // Cache successful responses
+                if (IsSuccessStatusCode(context.Response.StatusCode))
                 {
                     var responseSizeBytes = Encoding.UTF8.GetByteCount(responseBody);
                     if (responseSizeBytes > maxResponseSizeKb * 1024)
                     {
-                        _logger.LogWarning(
-                            "Idempotency response for key {IdempotencyKey} exceeds max size of {MaxKb}KB ({ActualKb}KB); skipping cache.", 
-                            idempotencyKey, 
-                            maxResponseSizeKb,
-                            responseSizeBytes / 1024);
+                        _logger.LogWarning("Response too large for idempotency cache: {Size}KB", responseSizeBytes / 1024);
                     }
                     else
                     {
-                        var responseToCache = new IdempotencyResponse
+                        var cacheEntry = new IdempotencyCacheEntry
                         {
-                            StatusCode = context.Response.StatusCode,
-                            ContentType = context.Response.ContentType ?? "application/json",
-                            Body = storeFullResponse ? responseBody : string.Empty,
-                            IsCompressed = enableCompression
+                            RequestPayloadHash = requestPayloadHash,
+                            Response = new IdempotencyResponse
+                            {
+                                StatusCode = context.Response.StatusCode,
+                                ContentType = context.Response.ContentType ?? "application/json",
+                                Body = storeFullResponse ? responseBody : string.Empty,
+                                IsCompressed = enableCompression
+                            }
                         };
 
-                        var serialized = JsonSerializer.Serialize(responseToCache);
+                        var serialized = JsonSerializer.Serialize(cacheEntry);
                         if (enableCompression)
                         {
-                            using var ms = new MemoryStream();
-                            using (var gzip = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
-                            {
-                                var bytes = Encoding.UTF8.GetBytes(serialized);
-                                gzip.Write(bytes, 0, bytes.Length);
-                            }
-                            var compressedBytes = ms.ToArray();
-                            serialized = Convert.ToBase64String(compressedBytes);
+                            serialized = CompressString(serialized);
                         }
 
                         var cacheOptions = new DistributedCacheEntryOptions
@@ -220,27 +175,83 @@ namespace CMS.Api.Middleware
                         };
 
                         await _cache.SetStringAsync(cacheKey, serialized, cacheOptions);
-                        
-                        _logger.LogInformation(
-                            "Cached idempotent response for key {IdempotencyKey} ({SizeKb}KB)", 
-                            idempotencyKey,
-                            responseSizeBytes / 1024);
                     }
                 }
             }
             finally
             {
-                // Release the distributed lock
                 await db.KeyDeleteAsync(lockKey);
             }
         }
 
-        /// <summary>
-        /// Determines if the HTTP method is non-idempotent and should use idempotency keys
-        /// </summary>
-        private bool IsNonIdempotentMethod(string method)
+        private async Task<string> ComputeRequestHashAsync(HttpRequest request)
         {
-            return method == "POST" || method == "PATCH" || method == "PUT";
+            if (request.ContentLength == 0 || !request.Body.CanRead)
+            {
+                return "empty_body";
+            }
+
+            request.EnableBuffering();
+            using var reader = new StreamReader(request.Body, leaveOpen: true);
+            var body = await reader.ReadToEndAsync();
+            request.Body.Position = 0;
+
+            using var sha256 = System.Security.Cryptography.SHA256.Create();
+            var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(body));
+            return Convert.ToBase64String(bytes);
+        }
+
+        private string CompressString(string input)
+        {
+            var bytes = Encoding.UTF8.GetBytes(input);
+            using var ms = new MemoryStream();
+            using (var gzip = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
+            {
+                gzip.Write(bytes, 0, bytes.Length);
+            }
+            return Convert.ToBase64String(ms.ToArray());
+        }
+
+        // FIX: Made return type nullable and added null checks
+        private IdempotencyCacheEntry? DeserializeCacheEntry(string value, bool isCompressed)
+        {
+            try
+            {
+                string json;
+                if (isCompressed)
+                {
+                    var compressedBytes = Convert.FromBase64String(value);
+                    using var ms = new MemoryStream(compressedBytes);
+                    using var gzip = new GZipStream(ms, CompressionMode.Decompress);
+                    using var reader = new StreamReader(gzip);
+                    json = reader.ReadToEnd();
+                }
+                else
+                {
+                    json = value;
+                }
+
+                // FIX: Handle potential null result from deserialization
+                return JsonSerializer.Deserialize<IdempotencyCacheEntry>(json) ?? null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to deserialize idempotency cache entry");
+                return null;
+            }
+        }
+
+        private bool IsNonIdempotentMethod(string method) => 
+            method == HttpMethods.Post || method == HttpMethods.Patch || method == HttpMethods.Put;
+
+        private bool IsSuccessStatusCode(int statusCode) => 
+            statusCode >= StatusCodes.Status200OK && statusCode < StatusCodes.Status300MultipleChoices;
+
+        // FIX: Made properties nullable to satisfy null reference warnings
+        private class IdempotencyCacheEntry
+        {
+            public string? RequestPayloadHash { get; set; }
+            public IdempotencyResponse? Response { get; set; }
         }
 
         private class IdempotencyResponse

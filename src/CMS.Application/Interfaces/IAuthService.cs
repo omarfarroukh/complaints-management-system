@@ -5,6 +5,7 @@ namespace CMS.Application.Interfaces;
 public interface IAuthService
 {
     Task<string> RegisterAsync(RegisterDto dto);
+    Task<bool> IsEmailUsedAsync(string email);
     Task<AuthResponseDto> LoginAsync(LoginDto dto, string ipAddress);
     // New methods
     Task<AuthResponseDto> RefreshTokenAsync(RefreshTokenDto dto);
@@ -18,5 +19,5 @@ public interface IAuthService
     Task<MfaSetupResponseDto> GenerateMfaSetupAsync(string userId);
     Task EnableMfaAsync(string userId, string code);
     Task DisableMfaAsync(string userId);
-    
+
 }

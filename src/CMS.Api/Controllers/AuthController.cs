@@ -326,4 +326,25 @@ public class AuthController : ControllerBase
         await _authService.DisableMfaAsync(userId!);
         return Ok(new ApiResponse<bool>(true, "MFA Disabled"));
     }
+
+    /// <summary>
+    /// Check if an email is already used
+    /// </summary>
+    /// <remarks>
+    /// Validates if the provided email is already registered in the system.
+    /// 
+    /// **Use Case:** Before allowing a new user to register, verify that the email is not already in use.
+    /// 
+    /// **Response:** Returns a boolean indicating whether the email is used or not.
+    /// </remarks>
+    /// <param name="email">Email address to check</param>
+    /// <returns>Boolean indicating if the email is used</returns>
+    /// <response code="200">Email check result</response>
+    [HttpGet("check-email")]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> CheckEmail(string email)
+    {
+        var isUsed = await _authService.IsEmailUsedAsync(email);
+        return Ok(new ApiResponse<bool>(isUsed, "Email check result"));
+    }
 }
