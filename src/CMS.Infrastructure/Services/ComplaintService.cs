@@ -5,6 +5,7 @@ using CMS.Domain.Entities;
 using CMS.Infrastructure.Persistence;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Identity;
 using Newtonsoft.Json;
 
 namespace CMS.Infrastructure.Services
@@ -323,5 +324,6 @@ namespace CMS.Infrastructure.Services
                 }).ToList() ?? new List<ComplaintAttachmentDto>()
             };
         }
+    
     }
 }

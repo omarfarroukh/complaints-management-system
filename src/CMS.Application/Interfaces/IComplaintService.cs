@@ -1,6 +1,6 @@
 using CMS.Application.DTOs;
 using CMS.Domain.Common;
-
+using CMS.Domain.Entities;
 namespace CMS.Application.Interfaces
 {
     public interface IComplaintService

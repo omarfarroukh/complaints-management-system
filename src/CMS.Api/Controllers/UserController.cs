@@ -74,7 +74,6 @@ public class UsersController : ControllerBase
         var users = await _userService.GetAllUsersAsync(filter, userId, userRole);
         foreach (var user in users)
         {
-            // Convert relative avatar URLs to absolute URLs
             user.AvatarUrl = user.AvatarUrl.ToAbsoluteUrl(Request);
         }
         return Ok(new ApiResponse<List<UserDto>>(users));
@@ -114,7 +113,9 @@ public class UsersController : ControllerBase
     /// <response code="404">User not found</response>
     [HttpPost("{id}/avatar")]
     [Authorize(Roles = "Admin")]
-    [InvalidateCache("users", "profiles")]
+    // Invalidate the shared list AND the specific profile tag (which implies we wipe the base 'profiles' tag)
+    [InvalidateCache("users")] 
+    [InvalidateCache("profiles")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -136,7 +137,6 @@ public class UsersController : ControllerBase
 
         await _userService.UpdateAvatarAsync(id, avatarUrl);
 
-        // Convert to absolute URL for client use
         var fullUrl = avatarUrl.ToAbsoluteUrl(Request);
 
         return Ok(new ApiResponse<string>(fullUrl, "Avatar uploaded successfully"));

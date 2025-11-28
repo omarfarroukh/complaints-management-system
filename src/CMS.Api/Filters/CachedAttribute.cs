@@ -1,137 +1,178 @@
-using System.Text;
-using System.Security.Claims;
+using CMS.Application.DTOs.System;
+using CMS.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
-using Microsoft.Extensions.Caching.Distributed;
-using StackExchange.Redis;
+using System.Collections.Concurrent;
+using System.Security.Claims;
+using System.Text;
 
 namespace CMS.Api.Filters;
 
-[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+[AttributeUsage(AttributeTargets.Method)]
 public class CachedAttribute : Attribute, IAsyncActionFilter
 {
-    private readonly int _timeToLiveSeconds;
-    private readonly string[] _tags;
-    
-    /// <summary>
-    /// Toggle between User-Specific (false) vs Shared (true) caching
-    /// </summary>
+    private readonly int _ttlSeconds;
+    private readonly string _baseTag;
+
+    // Redis (Server) Configuration
     public bool IsShared { get; set; } = false;
 
-    public CachedAttribute(int timeToLiveSeconds, params string[] tags)
+    // Browser (Client) Configuration
+    // Set to TRUE if you want the browser to store data. 
+    // Set to FALSE (Default) to force the browser to always ask the server.
+    public bool AllowClientCache { get; set; } = false;
+
+    // Concurrency
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
+
+    public CachedAttribute(int ttlSeconds, string baseTag)
     {
-        _timeToLiveSeconds = timeToLiveSeconds;
-        _tags = tags;
+        _ttlSeconds = ttlSeconds;
+        _baseTag = baseTag;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
-        // 1. Get Services
-        var cache = context.HttpContext.RequestServices.GetRequiredService<IDistributedCache>();
-        var redis = context.HttpContext.RequestServices.GetRequiredService<IConnectionMultiplexer>();
-        var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<CachedAttribute>>();
-        var env = context.HttpContext.RequestServices.GetRequiredService<IHostEnvironment>();
-
-        var key = GenerateCacheKeyFromContext(context.HttpContext, IsShared);
-
-        // 2. TRY TO READ CACHE (Safely)
-        try
+        if (context.HttpContext.Request.Method != "GET")
         {
-            var cachedResponse = await cache.GetStringAsync(key);
-            if (!string.IsNullOrEmpty(cachedResponse))
-            {
-                logger.LogDebug("✅ Cache HIT for key: {Key}", key);
-                
-                context.Result = new ContentResult
-                {
-                    Content = cachedResponse,
-                    ContentType = "application/json",
-                    StatusCode = 200
-                };
-                return;
-            }
-            
-            logger.LogDebug("⚠️ Cache MISS for key: {Key}", key);
-        }
-        catch (Exception ex)
-        {
-            // REDIS IS DOWN: Log warning, but DO NOT throw. 
-            // Let the request proceed to the database.
-            logger.LogWarning(ex, "Redis cache read failed for key {Key}. Falling back to database.", key);
-            
-            // In development, make it more visible
-            if (env.IsDevelopment())
-            {
-                logger.LogError("🔴 Redis connectivity issue detected! Check your Redis server.");
-            }
+            await next();
+            return;
         }
 
-        // 3. EXECUTE CONTROLLER (Database hit)
-        var executedContext = await next();
+        var services = context.HttpContext.RequestServices;
+        var cacheService = services.GetRequiredService<ICacheService>();
 
-        // 4. TRY TO WRITE CACHE (Safely)
-        if (executedContext.Result is OkObjectResult okObjectResult)
+        var userId = IsShared ? null : context.HttpContext.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var cacheKey = GenerateKey(context.HttpContext.Request, userId);
+
+        // 1. FAST PATH: Try Read Redis
+        var cachedWrapper = await cacheService.GetAsync<CacheWrapper>(cacheKey);
+
+        if (cachedWrapper != null)
+        {
+            // Even if client cache is off, we can still check ETag (304) to save bandwidth
+            // if the browser happened to hold onto the ETag.
+            if (TryServe304(context, cachedWrapper.Content)) return;
+
+            ServeResponse(context, cachedWrapper);
+            return;
+        }
+
+        // 2. SLOW PATH: Lock and DB
+        var myLock = _locks.GetOrAdd(cacheKey, k => new SemaphoreSlim(1, 1));
+
+        if (await myLock.WaitAsync(TimeSpan.FromSeconds(5)))
         {
             try
             {
-                var jsonResponse = System.Text.Json.JsonSerializer.Serialize(okObjectResult.Value);
-                
-                await cache.SetStringAsync(key, jsonResponse, new DistributedCacheEntryOptions
+                cachedWrapper = await cacheService.GetAsync<CacheWrapper>(cacheKey);
+                if (cachedWrapper != null)
                 {
-                    AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(_timeToLiveSeconds)
-                });
+                    ServeResponse(context, cachedWrapper);
+                    return;
+                }
 
-                logger.LogDebug("💾 Cached response for key: {Key} (TTL: {TTL}s)", key, _timeToLiveSeconds);
+                var executedContext = await next();
 
-                // Store tags for invalidation
-                if (_tags.Length > 0)
+                if (executedContext.Result is OkObjectResult okResult)
                 {
-                    var db = redis.GetDatabase();
-                    foreach (var tag in _tags)
+                    var jsonResponse = System.Text.Json.JsonSerializer.Serialize(okResult.Value);
+                    var wrapper = new CacheWrapper
                     {
-                        await db.SetAddAsync($"tag:{tag}", key);
-                        await db.KeyExpireAsync($"tag:{tag}", TimeSpan.FromSeconds(_timeToLiveSeconds));
-                    }
-                    
-                    logger.LogDebug("🏷️ Tagged cache entry with: {Tags}", string.Join(", ", _tags));
+                        Content = jsonResponse,
+                        ContentType = "application/json"
+                    };
+
+                    var tags = new List<string> { _baseTag };
+                    if (!IsShared && !string.IsNullOrEmpty(userId)) tags.Add($"{_baseTag}_user_{userId}");
+                    if (context.HttpContext.Request.RouteValues.TryGetValue("id", out var idVal)) tags.Add($"{_baseTag}_id_{idVal}");
+
+                    await cacheService.SetAsync(cacheKey, wrapper, TimeSpan.FromSeconds(_ttlSeconds), tags.ToArray());
+
+                    // IMPORTANT: Serve the response correctly with headers
+                    // We must manually set the ETag here for the first response
+                    ServeResponse(executedContext, wrapper);
                 }
             }
-            catch (Exception ex)
+            finally
             {
-                // REDIS IS DOWN: Log warning.
-                // The user still got their data, so we don't crash.
-                logger.LogWarning(ex, "Redis cache write failed for key {Key}.", key);
+                myLock.Release();
+                _locks.TryRemove(cacheKey, out _);
             }
+        }
+        else
+        {
+            await next();
         }
     }
 
-    /// <summary>
-    /// Generates a cache key from the HTTP request context
-    /// </summary>
-    private static string GenerateCacheKeyFromContext(HttpContext context, bool isShared)
+    // --- UPDATED HELPERS ---
+
+    private void ServeResponse(ActionContext context, CacheWrapper wrapper)
     {
-        var request = context.Request;
+        var response = context.HttpContext.Response;
+
+        // Always calculate ETag (It allows for 304 Not Modified even if no-cache is set)
+        var etag = GenerateETag(wrapper.Content);
+        response.Headers.ETag = etag;
+
+        if (AllowClientCache)
+        {
+            // Browser can store data for _ttlSeconds
+            response.Headers.CacheControl = $"public,max-age={_ttlSeconds}";
+        }
+        else
+        {
+            // Browser MUST NOT store data. Must check with server every time.
+            // "no-cache" means: You can store it, but you must validate ETag with server before showing it.
+            // "no-store" means: Don't store it at all.
+            response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            response.Headers.Pragma = "no-cache";
+            response.Headers.Expires = "0";
+        }
+
+        // If we are modifying the ExecutedContext (initial load), we don't need to replace the Result.
+        // If we are in the caching hit (ActionExecutingContext), we do.
+        if (context is ActionExecutingContext executingContext)
+        {
+            executingContext.Result = new ContentResult
+            {
+                Content = wrapper.Content,
+                ContentType = wrapper.ContentType,
+                StatusCode = 200
+            };
+        }
+    }
+
+    private bool TryServe304(ActionExecutingContext context, string content)
+    {
+        var etag = GenerateETag(content);
+        if (context.HttpContext.Request.Headers.TryGetValue("If-None-Match", out var incomingEtag) &&
+            incomingEtag.ToString() == etag)
+        {
+            context.Result = new StatusCodeResult(304);
+            return true;
+        }
+        return false;
+    }
+
+    private static string GenerateKey(HttpRequest request, string? userId)
+    {
         var keyBuilder = new StringBuilder();
-
-        // Start with the path
         keyBuilder.Append($"{request.Path}");
-
-        // Add query parameters in sorted order for consistency
         foreach (var (key, value) in request.Query.OrderBy(x => x.Key))
         {
             keyBuilder.Append($"|{key}-{value}");
         }
-
-        // ONLY append User ID if it is NOT a shared cache
-        if (!isShared)
-        {
-            var userId = context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (!string.IsNullOrEmpty(userId))
-            {
-                keyBuilder.Append($"|user-{userId}");
-            }
-        }
-
+        if (userId != null) keyBuilder.Append($"|u-{userId}");
         return keyBuilder.ToString();
+    }
+
+    private static string GenerateETag(string content)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var bytes = Encoding.UTF8.GetBytes(content);
+        var hash = sha.ComputeHash(bytes);
+        return $"\"{Convert.ToBase64String(hash)}\"";
     }
 }

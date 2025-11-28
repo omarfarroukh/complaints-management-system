@@ -208,6 +208,14 @@ try
     builder.Services.AddScoped<INotificationService, NotificationService>();
     builder.Services.AddScoped<INotificationJob, NotificationJob>();
     builder.Services.AddScoped<IDashboardService, DashboardService>();
+    builder.Services.AddSingleton<ICacheService>(sp =>
+    {
+        var distributedCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
+        var connectionMultiplexer = sp.GetRequiredService<IConnectionMultiplexer>();
+
+        // Pass "CMS:" explicitly here
+        return new RedisCacheService(distributedCache, connectionMultiplexer, "CMS:");
+    });
     builder.Services.AddSingleton<SseService>();
 
     // SignalR

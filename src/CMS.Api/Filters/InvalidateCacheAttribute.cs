@@ -1,99 +1,101 @@
+using CMS.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
-using StackExchange.Redis;
+using System.Security.Claims;
 
 namespace CMS.Api.Filters;
 
-[AttributeUsage(AttributeTargets.Method)]
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
 public class InvalidateCacheAttribute : Attribute, IAsyncActionFilter
 {
-    private readonly string[] _tags;
+    private readonly string _baseTag;
+    public bool InvalidateOwners { get; set; } = false;
+    public bool InvalidateShared { get; set; } = false;
 
-    public InvalidateCacheAttribute(params string[] tags)
+    public InvalidateCacheAttribute(string baseTag)
     {
-        _tags = tags ?? throw new ArgumentNullException(nameof(tags));
+        _baseTag = baseTag;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
-        // 1. Run the Action first (Create/Update/Delete)
         var executedContext = await next();
 
-        var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<InvalidateCacheAttribute>>();
-
-        // 2. If successful, invalidate the cache
-        if (executedContext.Exception == null && IsSuccessResult(executedContext.Result))
+        if (executedContext.Exception != null || !IsSuccessResult(executedContext.Result))
         {
-            try
+            return;
+        }
+
+        try
+        {
+            var cacheService = context.HttpContext.RequestServices.GetRequiredService<ICacheService>();
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<InvalidateCacheAttribute>>();
+
+            var tagsToInvalidate = new List<string>();
+
+            // 1. Always add the base tag (e.g., "profiles")
+            tagsToInvalidate.Add(_baseTag);
+
+            // 2. CRITICAL FIX: If a user is logged in, and this is NOT a shared invalidation,
+            // invalidate their specific user tag too.
+            // This covers the exact scenario of a user patching their own profile.
+            if (!InvalidateShared)
             {
-                var redis = context.HttpContext.RequestServices.GetRequiredService<IConnectionMultiplexer>();
-                var db = redis.GetDatabase();
-
-                var totalKeysInvalidated = 0;
-
-                foreach (var tag in _tags)
+                var currentUserId = context.HttpContext.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (!string.IsNullOrEmpty(currentUserId))
                 {
-                    // A. Find all keys related to this tag
-                    var keys = await db.SetMembersAsync($"tag:{tag}");
-                    
-                    if (keys.Length > 0)
-                    {
-                        // B. Convert RedisValue[] to RedisKey[]
-                        var redisKeys = Array.ConvertAll(keys, k => (RedisKey)k.ToString());
-                        
-                        // C. Delete the actual cached data
-                        await db.KeyDeleteAsync(redisKeys);
-                        
-                        // D. Delete the Tag Set itself
-                        await db.KeyDeleteAsync($"tag:{tag}");
-                        
-                        totalKeysInvalidated += keys.Length;
-                        
-                        logger.LogInformation(
-                            "🗑️ Invalidated {Count} cache entries for tag: {Tag}", 
-                            keys.Length, 
-                            tag);
-                    }
-                    else
-                    {
-                        logger.LogDebug("No cache entries found for tag: {Tag}", tag);
-                    }
-                }
-
-                if (totalKeysInvalidated > 0)
-                {
-                    logger.LogInformation(
-                        "✅ Cache invalidation complete: {TotalKeys} entries removed for tags: {Tags}",
-                        totalKeysInvalidated,
-                        string.Join(", ", _tags));
+                    tagsToInvalidate.Add($"{_baseTag}_user_{currentUserId}");
                 }
             }
-            catch (Exception ex)
+
+            // 3. Route Value Invalidation (e.g. complaints_id_123)
+            if (context.HttpContext.Request.RouteValues.TryGetValue("id", out var idVal))
             {
-                // Log but don't throw - cache invalidation failure shouldn't break the request
-                logger.LogWarning(
-                    ex, 
-                    "⚠️ Cache invalidation failed for tags: {Tags}. Cache may be stale.", 
-                    string.Join(", ", _tags));
+                tagsToInvalidate.Add($"{_baseTag}_id_{idVal}");
+            }
+
+            // 4. Intelligent Owner Invalidation (Reflection from Result DTO)
+            if (InvalidateOwners && executedContext.Result is ObjectResult objResult && objResult.Value != null)
+            {
+                var dto = objResult.Value;
+                var type = dto.GetType();
+
+                AddUserTagIfPresent(tagsToInvalidate, dto, type, "CitizenId");
+                AddUserTagIfPresent(tagsToInvalidate, dto, type, "AssignedEmployeeId");
+            }
+
+            if (tagsToInvalidate.Count > 0)
+            {
+                await cacheService.RemoveByTagAsync(tagsToInvalidate.ToArray());
+                logger.LogDebug("Invalidated tags: {Tags}", string.Join(", ", tagsToInvalidate));
             }
         }
-        else if (executedContext.Exception != null)
+        catch (Exception ex)
         {
-            logger.LogDebug(
-                "Skipping cache invalidation due to exception in action for tags: {Tags}", 
-                string.Join(", ", _tags));
+             var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<InvalidateCacheAttribute>>();
+             logger.LogWarning(ex, "Cache invalidation failed");
         }
     }
 
-    /// <summary>
-    /// Determines if the action result indicates a successful operation
-    /// </summary>
+    private void AddUserTagIfPresent(List<string> tags, object dto, Type type, string propertyName)
+    {
+        var prop = type.GetProperty(propertyName);
+        if (prop != null)
+        {
+            var value = prop.GetValue(dto)?.ToString();
+            if (!string.IsNullOrEmpty(value))
+            {
+                tags.Add($"{_baseTag}_user_{value}");
+            }
+        }
+    }
+
     private bool IsSuccessResult(IActionResult? result)
     {
         return result is OkResult 
-            or OkObjectResult 
-            or CreatedAtActionResult 
-            or CreatedAtRouteResult
-            or NoContentResult;
+            || result is OkObjectResult 
+            || result is CreatedAtActionResult 
+            || result is CreatedResult
+            || result is NoContentResult;
     }
 }

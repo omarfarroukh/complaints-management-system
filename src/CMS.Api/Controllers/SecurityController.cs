@@ -48,20 +48,13 @@ public class SecurityController : ControllerBase
     /// <response code="401">Not authenticated</response>
     /// <response code="403">Not authorized (requires Admin role)</response>
     [HttpGet("blacklisted-ips")]
-    [Cached(60, "security", IsShared = true)] // Cache for 1 minute
+    [Cached(60, "security", IsShared = true)] 
     [ProducesResponseType(typeof(ApiResponse<List<IpBlacklistDto>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetBlacklistedIps()
     {
         _logger.LogInformation("Admin retrieving blacklisted IPs");
-
         var blacklist = await _securityService.GetBlacklistedIpsAsync();
-
-        return Ok(new ApiResponse<List<IpBlacklistDto>>(blacklist)
-        {
-            Message = $"Retrieved {blacklist.Count} blacklisted IPs"
-        });
+        return Ok(new ApiResponse<List<IpBlacklistDto>>(blacklist));
     }
 
     /// <summary>
@@ -94,30 +87,13 @@ public class SecurityController : ControllerBase
     [InvalidateCache("security")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> BlockIp([FromBody] BlockIpRequest request)
     {
         if (string.IsNullOrEmpty(request.IpAddress))
-        {
-            return BadRequest(new ApiResponse<string>
-            {
-                Succeeded = false,
-                Message = "IP address is required"
-            });
-        }
-
-        _logger.LogWarning(
-            "Admin manually blocking IP: {IpAddress} - Reason: {Reason}",
-            request.IpAddress,
-            request.Reason);
+            return BadRequest(new ApiResponse<string>("IP address is required"));
 
         await _securityService.BlockIpAsync(request.IpAddress, request.Reason ?? "Manually blocked by admin");
-
-        return Ok(new ApiResponse<string>
-        {
-            Message = $"IP {request.IpAddress} has been blocked"
-        });
+        return Ok(new ApiResponse<string>($"IP {request.IpAddress} has been blocked"));
     }
 
     /// <summary>
@@ -144,31 +120,14 @@ public class SecurityController : ControllerBase
     [Transactional]
     [InvalidateCache("security")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> UnblockIp([FromBody] UnblockIpRequest request)
     {
         if (string.IsNullOrEmpty(request.IpAddress))
-        {
-            return BadRequest(new ApiResponse<string>
-            {
-                Succeeded = false,
-                Message = "IP address is required"
-            });
-        }
-
-        _logger.LogInformation("Admin unblocking IP: {IpAddress}", request.IpAddress);
+            return BadRequest(new ApiResponse<string>("IP address is required"));
 
         await _securityService.UnblockIpAsync(request.IpAddress);
-
-        // Also clear rate limit data
         await _rateLimitService.ClearRateLimitDataAsync(request.IpAddress);
-
-        return Ok(new ApiResponse<string>
-        {
-            Message = $"IP {request.IpAddress} has been unblocked"
-        });
+        return Ok(new ApiResponse<string>($"IP {request.IpAddress} has been unblocked"));
     }
 
     /// <summary>
@@ -199,20 +158,12 @@ public class SecurityController : ControllerBase
     /// <response code="401">Not authenticated</response>
     /// <response code="403">Not authorized (requires Admin role)</response>
     [HttpGet("login-attempts")]
-    [Cached(30, "security", IsShared = true)] // Cache for 30 seconds
+    [Cached(30, "security", IsShared = true)]
     [ProducesResponseType(typeof(ApiResponse<List<LoginAttemptDto>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetLoginAttempts([FromQuery] int count = 100)
     {
-        _logger.LogInformation("Admin retrieving recent login attempts");
-
         var attempts = await _securityService.GetRecentLoginAttemptsAsync(count);
-
-        return Ok(new ApiResponse<List<LoginAttemptDto>>(attempts)
-        {
-            Message = $"Retrieved {attempts.Count} login attempts"
-        });
+        return Ok(new ApiResponse<List<LoginAttemptDto>>(attempts));
     }
 
     /// <summary>
@@ -236,20 +187,12 @@ public class SecurityController : ControllerBase
     /// <response code="401">Not authenticated</response>
     /// <response code="403">Not authorized (requires Admin role)</response>
     [HttpGet("failed-ips")]
-    [Cached(60, "security", IsShared = true)] // Cache for 1 minute
+    [Cached(60, "security", IsShared = true)]
     [ProducesResponseType(typeof(ApiResponse<Dictionary<string, int>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetTopFailedIps([FromQuery] int count = 20)
     {
-        _logger.LogInformation("Admin retrieving top failed IPs");
-
         var failedIps = await _securityService.GetTopFailedIpsAsync(count);
-
-        return Ok(new ApiResponse<Dictionary<string, int>>(failedIps)
-        {
-            Message = $"Retrieved top {failedIps.Count} failed IPs"
-        });
+        return Ok(new ApiResponse<Dictionary<string, int>>(failedIps));
     }
 
     /// <summary>
@@ -275,12 +218,8 @@ public class SecurityController : ControllerBase
     [HttpGet("statistics")]
     [Cached(30, "security", IsShared = true)]
     [ProducesResponseType(typeof(ApiResponse<SecurityStatisticsDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetStatistics()
     {
-        _logger.LogInformation("Admin retrieving security statistics");
-
         var attempts = await _securityService.GetRecentLoginAttemptsAsync(1000);
         var blacklist = await _securityService.GetBlacklistedIpsAsync();
         var failedIps = await _securityService.GetTopFailedIpsAsync(10);
@@ -295,12 +234,8 @@ public class SecurityController : ControllerBase
             LastUpdated = DateTime.UtcNow
         };
 
-        return Ok(new ApiResponse<SecurityStatisticsDto>(stats)
-        {
-            Message = "Security statistics retrieved"
-        });
+        return Ok(new ApiResponse<SecurityStatisticsDto>(stats));
     }
-
     /// <summary>
     /// Clean up old login attempts history
     /// </summary>
@@ -316,20 +251,13 @@ public class SecurityController : ControllerBase
     /// <response code="200">Cleanup completed successfully</response>
     /// <response code="401">Not authenticated</response>
     /// <response code="403">Not authorized (requires Admin role)</response>
-    [HttpPost("cleanup-old-attempts")]
+[HttpPost("cleanup-old-attempts")]
+    [InvalidateCache("security")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> CleanupOldAttempts([FromQuery] int daysToKeep = 30)
     {
-        _logger.LogInformation("Admin manually triggering cleanup of login attempts older than {Days} days", daysToKeep);
-
         await _securityService.CleanupOldLoginAttemptsAsync(daysToKeep);
-
-        return Ok(new ApiResponse<string>
-        {
-            Message = $"Cleanup completed for attempts older than {daysToKeep} days"
-        });
+        return Ok(new ApiResponse<string>($"Cleanup completed for attempts older than {daysToKeep} days"));
     }
 
     /// <summary>
@@ -347,12 +275,8 @@ public class SecurityController : ControllerBase
     /// <response code="403">Not authorized (requires Admin role)</response>
     [HttpGet("check-ip/{ipAddress}")]
     [ProducesResponseType(typeof(ApiResponse<IpStatusDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> CheckIpStatus(string ipAddress)
     {
-        _logger.LogInformation("Admin checking status for IP: {IpAddress}", ipAddress);
-
         var isBlocked = await _securityService.IsIpBlockedAsync(ipAddress);
         var isWhitelisted = await _rateLimitService.IsWhitelistedAsync(ipAddress);
 
@@ -364,9 +288,6 @@ public class SecurityController : ControllerBase
             Status = isWhitelisted ? "Whitelisted" : (isBlocked ? "Blocked" : "Active")
         };
 
-        return Ok(new ApiResponse<IpStatusDto>(status)
-        {
-            Message = $"IP status for {ipAddress}"
-        });
+        return Ok(new ApiResponse<IpStatusDto>(status));
     }
 }

@@ -2,7 +2,7 @@ using CMS.Application.Wrappers;
 using Microsoft.AspNetCore.Mvc;
 using CMS.Application.DTOs;
 using CMS.Application.Interfaces;
-
+using CMS.Api.Filters;
 namespace CMS.Api.Controllers;
 
 /// <summary>
@@ -68,7 +68,8 @@ public class ActivationController : ControllerBase
     /// <returns>Success confirmation</returns>
     /// <response code="200">Account activated successfully, user can now log in</response>
     /// <response code="400">Invalid token or password validation errors</response>
-    [HttpPost("complete")]
+[   HttpPost("complete")]
+    [InvalidateCache("users")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Complete([FromBody] CompleteActivationDto dto)

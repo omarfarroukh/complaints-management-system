@@ -32,6 +32,22 @@ services:
       - ./logs:/app/Logs 
       - ./wwwroot_data:/app/wwwroot
 
+  nginx:
+    image: nginx:alpine
+    container_name: cms_gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.crt:/etc/nginx/nginx.crt:ro
+      - ./nginx/nginx.key:/etc/nginx/nginx.key:ro
+      - ./wwwroot_data/uploads:/usr/share/nginx/html/uploads:ro
+    depends_on:
+      - cms_api
+    networks:
+      - shared_network
+
 # This tells Docker: "Don't create a new network. Use the existing one named 'shared-services-network'"
 networks:
   shared_network:

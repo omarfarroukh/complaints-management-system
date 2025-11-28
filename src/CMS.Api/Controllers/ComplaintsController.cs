@@ -80,7 +80,7 @@ namespace CMS.Api.Controllers
         [Authorize(Roles = "Citizen")]
         [Transactional]
         [Idempotency]
-        [InvalidateCache("complaints")]
+        [InvalidateCache("complaints", InvalidateOwners = true)]
         [ProducesResponseType(typeof(ComplaintDto), StatusCodes.Status201Created)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -92,8 +92,11 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             var complaint = await _complaintService.CreateComplaintAsync(request, userId);
+
+            HttpContext.Items["CreatedComplaint"] = complaint;
             PrepareComplaintUrl(complaint);
 
+            // Returns CreatedAtAction (ObjectResult) which enables Reflection in the Attribute
             return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, complaint);
         }
 
@@ -213,8 +216,8 @@ namespace CMS.Api.Controllers
         [Authorize(Roles = "DepartmentManager")]
         [Transactional]
         [Idempotency]
-        [InvalidateCache("complaints")]
-        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [InvalidateCache("complaints", InvalidateOwners = true)]
+        [ProducesResponseType(typeof(ComplaintDto), StatusCodes.Status200OK)] // Changed from 204
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
@@ -234,7 +237,11 @@ namespace CMS.Api.Controllers
             try
             {
                 await _complaintService.AssignComplaintAsync(id, request.EmployeeId, managerId);
-                return NoContent();
+
+                var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
+                if (updatedComplaint == null) return NotFound(); // Safety check
+
+                return Ok(updatedComplaint); ;
             }
             finally
             {
@@ -281,8 +288,8 @@ namespace CMS.Api.Controllers
         [Authorize(Roles = "DepartmentManager,Employee")]
         [Transactional]
         [Idempotency]
-        [InvalidateCache("complaints")]
-        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [InvalidateCache("complaints", InvalidateOwners = true)]
+        [ProducesResponseType(typeof(ComplaintDto), StatusCodes.Status200OK)] // Changed from 204
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
@@ -302,8 +309,14 @@ namespace CMS.Api.Controllers
             try
             {
                 var status = Enum.Parse<ComplaintStatus>(request.Status);
+
+                // FIX CS0815: Call service, then fetch updated object manually
                 await _complaintService.UpdateComplaintStatusAsync(id, status, userId);
-                return NoContent();
+
+                var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
+                if (updatedComplaint == null) return NotFound();
+
+                return Ok(updatedComplaint);
             }
             finally
             {
@@ -340,7 +353,7 @@ namespace CMS.Api.Controllers
         /// <response code="404">Complaint not found</response>
         [HttpPost("{id}/attachments")]
         [Transactional]
-        [InvalidateCache("complaints")]
+        [InvalidateCache("complaints", InvalidateOwners = true)]
         [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -353,11 +366,25 @@ namespace CMS.Api.Controllers
             if (file == null || file.Length == 0)
                 return BadRequest("No file uploaded.");
 
-            var relativePath = await _fileStorageService.SaveFileAsync(file.OpenReadStream(), file.FileName, $"complaints/{id}");
+            var relativePath = await _fileStorageService.SaveFileAsync(
+                file.OpenReadStream(),
+                file.FileName,
+                $"complaints/{id}");
 
-            await _complaintService.AddAttachmentAsync(id, relativePath, file.FileName, file.Length, file.ContentType, userId);
+            await _complaintService.AddAttachmentAsync(
+                id, relativePath, file.FileName, file.Length, file.ContentType, userId);
 
-            return Ok(new { FileUrl = relativePath.ToAbsoluteUrl(Request) });
+            // Fetch updated complaint to return for cache invalidation
+            var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
+
+            // FIX CS8604: Null check
+            if (updatedComplaint != null)
+            {
+                PrepareComplaintUrl(updatedComplaint);
+                return Ok(updatedComplaint);
+            }
+
+            return NotFound();
         }
 
         /// <summary>
@@ -396,6 +423,7 @@ namespace CMS.Api.Controllers
         [HttpPost("{id}/notes")]
         [Transactional]
         [Idempotency]
+        // Notes don't change the main list view usually, but we invalidate the specific ID tag
         [InvalidateCache("complaints")]
         [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
@@ -451,7 +479,7 @@ namespace CMS.Api.Controllers
         /// <response code="401">Not authenticated</response>
         /// <response code="404">Complaint not found</response>
         [HttpGet("{id}/versions")]
-        [Cached(60)]
+        [Cached(60, "complaints")] // Uses Tag + ID automatically
         [ProducesResponseType(typeof(List<ComplaintAuditLogDto>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
@@ -502,7 +530,7 @@ namespace CMS.Api.Controllers
         [HttpPatch("{id}")]
         [Transactional]
         [Idempotency]
-        [InvalidateCache("complaints")]
+        [InvalidateCache("complaints", InvalidateOwners = true)]
         [ProducesResponseType(typeof(ComplaintDto), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -523,7 +551,8 @@ namespace CMS.Api.Controllers
 
             try
             {
-                var updatedComplaint = await _complaintService.UpdateComplaintDetailsAsync(id, request, userId, role);
+                var updatedComplaint = await _complaintService.UpdateComplaintDetailsAsync(
+                    id, request, userId, role);
                 PrepareComplaintUrl(updatedComplaint);
                 return Ok(updatedComplaint);
             }

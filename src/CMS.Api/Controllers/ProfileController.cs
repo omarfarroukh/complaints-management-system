@@ -58,7 +58,6 @@ namespace CMS.Api.Controllers
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var profile = await _userService.GetProfileAsync(userId!);
 
-            // Convert relative avatar URL to absolute URL
             profile.AvatarUrl = profile.AvatarUrl.ToAbsoluteUrl(Request);
 
             return Ok(new ApiResponse<UserProfileDto>(profile));
@@ -103,6 +102,7 @@ namespace CMS.Api.Controllers
         [HttpPatch]
         [Transactional]
         [InvalidateCache("profiles")]
+        [InvalidateCache("users")]
         [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -148,6 +148,7 @@ namespace CMS.Api.Controllers
         /// <response code="401">Not authenticated or invalid token</response>
         [HttpPost("avatar")]
         [InvalidateCache("profiles")]
+        [InvalidateCache("users")]
         [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -163,7 +164,6 @@ namespace CMS.Api.Controllers
 
             await _userService.UpdateAvatarAsync(userId!, avatarUrl);
 
-            // Convert to absolute URL for client use
             var fullUrl = avatarUrl.ToAbsoluteUrl(Request);
 
             return Ok(new ApiResponse<string>(fullUrl, "Avatar uploaded successfully"));
@@ -198,6 +198,7 @@ namespace CMS.Api.Controllers
         /// <response code="401">Not authenticated or invalid token</response>
         [HttpDelete("avatar")]
         [InvalidateCache("profiles")]
+        [InvalidateCache("users")]
         [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
         public async Task<IActionResult> DeleteAvatar()
