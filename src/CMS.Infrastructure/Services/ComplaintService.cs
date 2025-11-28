@@ -27,7 +27,7 @@ namespace CMS.Infrastructure.Services
                 DepartmentId = dto.DepartmentId,
                 CitizenId = citizenId,
                 Status = ComplaintStatus.Submitted, // Default to Submitted
-                Priority =  ComplaintPriority.Low,
+                Priority = ComplaintPriority.Low,
                 Latitude = dto.Latitude,
                 Longitude = dto.Longitude,
                 Address = dto.Address,
@@ -230,59 +230,49 @@ namespace CMS.Infrastructure.Services
 
         public async Task<ComplaintDto> UpdateComplaintDetailsAsync(Guid complaintId, PatchComplaintDto dto, string userId, string role)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
+            var complaint = await _context.Complaints.FindAsync(complaintId);
+            if (complaint == null) throw new KeyNotFoundException("Complaint not found");
+
+            var oldValues = JsonConvert.SerializeObject(complaint);
+            bool isChanged = false;
+
+            // Role-based restrictions
+            if (role == "Citizen")
             {
-                var complaint = await _context.Complaints.FindAsync(complaintId);
-                if (complaint == null) throw new KeyNotFoundException("Complaint not found");
+                if (complaint.Status != ComplaintStatus.Draft && complaint.Status != ComplaintStatus.Submitted)
+                    throw new InvalidOperationException("Citizens can only edit complaints in Draft or Submitted status.");
 
-                var oldValues = JsonConvert.SerializeObject(complaint);
-                bool isChanged = false;
-
-                // Role-based restrictions
-                if (role == "Citizen")
-                {
-                    if (complaint.Status != ComplaintStatus.Draft && complaint.Status != ComplaintStatus.Submitted)
-                        throw new InvalidOperationException("Citizens can only edit complaints in Draft or Submitted status.");
-
-                    if (dto.Title != null) { complaint.Title = dto.Title; isChanged = true; }
-                    if (dto.Description != null) { complaint.Description = dto.Description; isChanged = true; }
-                    if (dto.Latitude != null) { complaint.Latitude = dto.Latitude; isChanged = true; }
-                    if (dto.Longitude != null) { complaint.Longitude = dto.Longitude; isChanged = true; }
-                    if (dto.Address != null) { complaint.Address = dto.Address; isChanged = true; }
-                    if (dto.Metadata != null) { complaint.Metadata = dto.Metadata; isChanged = true; }
-                }
-                else if (role == "DepartmentManager" || role == "Employee")
-                {
-                    if (dto.Priority != null && Enum.TryParse<ComplaintPriority>(dto.Priority, out var p))
-                    {
-                        complaint.Priority = p;
-                        isChanged = true;
-                    }
-                    if (role == "DepartmentManager" && dto.DepartmentId != null)
-                    {
-                        complaint.DepartmentId = dto.DepartmentId;
-                        isChanged = true;
-                    }
-                    // Managers/Employees might update metadata too
-                    if (dto.Metadata != null) { complaint.Metadata = dto.Metadata; isChanged = true; }
-                }
-
-                if (isChanged)
-                {
-                    complaint.LastModifiedOn = DateTime.UtcNow;
-                    LogChange(complaint, "Details updated via PATCH", userId, oldValues);
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-                }
-
-                return MapToDto(complaint);
+                if (dto.Title != null) { complaint.Title = dto.Title; isChanged = true; }
+                if (dto.Description != null) { complaint.Description = dto.Description; isChanged = true; }
+                if (dto.Latitude != null) { complaint.Latitude = dto.Latitude; isChanged = true; }
+                if (dto.Longitude != null) { complaint.Longitude = dto.Longitude; isChanged = true; }
+                if (dto.Address != null) { complaint.Address = dto.Address; isChanged = true; }
+                if (dto.Metadata != null) { complaint.Metadata = dto.Metadata; isChanged = true; }
             }
-            catch
+            else if (role == "DepartmentManager" || role == "Employee")
             {
-                await transaction.RollbackAsync();
-                throw;
+                if (dto.Priority != null && Enum.TryParse<ComplaintPriority>(dto.Priority, out var p))
+                {
+                    complaint.Priority = p;
+                    isChanged = true;
+                }
+                if (role == "DepartmentManager" && dto.DepartmentId != null)
+                {
+                    complaint.DepartmentId = dto.DepartmentId;
+                    isChanged = true;
+                }
+                // Managers/Employees might update metadata too
+                if (dto.Metadata != null) { complaint.Metadata = dto.Metadata; isChanged = true; }
             }
+
+            if (isChanged)
+            {
+                complaint.LastModifiedOn = DateTime.UtcNow;
+                LogChange(complaint, "Details updated via PATCH", userId, oldValues);
+                await _context.SaveChangesAsync();
+            }
+
+            return MapToDto(complaint);
         }
 
         private void LogChange(Complaint complaint, string summary, string userId, string oldValues)
