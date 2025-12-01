@@ -93,7 +93,7 @@ public class SecurityController : ControllerBase
             return BadRequest(new ApiResponse<string>("IP address is required"));
 
         await _securityService.BlockIpAsync(request.IpAddress, request.Reason ?? "Manually blocked by admin");
-        return Ok(new ApiResponse<string>($"IP {request.IpAddress} has been blocked"));
+        return Ok(new ApiResponse<bool>(true, $"IP {request.IpAddress} has been blocked"));
     }
 
     /// <summary>
@@ -127,7 +127,7 @@ public class SecurityController : ControllerBase
 
         await _securityService.UnblockIpAsync(request.IpAddress);
         await _rateLimitService.ClearRateLimitDataAsync(request.IpAddress);
-        return Ok(new ApiResponse<string>($"IP {request.IpAddress} has been unblocked"));
+        return Ok(new ApiResponse<bool>(true, $"IP {request.IpAddress} has been unblocked"));
     }
 
     /// <summary>

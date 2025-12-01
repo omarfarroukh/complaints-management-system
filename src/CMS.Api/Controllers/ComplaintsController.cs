@@ -8,6 +8,7 @@ using System.Security.Claims;
 using StackExchange.Redis;
 using CMS.Api.Helpers;
 using CMS.Application.Wrappers;
+using Hangfire;
 
 namespace CMS.Api.Controllers
 {
@@ -97,7 +98,10 @@ namespace CMS.Api.Controllers
             PrepareComplaintUrl(complaint);
 
             // Returns CreatedAtAction (ObjectResult) which enables Reflection in the Attribute
-            return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, complaint);
+            var response = new ApiResponse<ComplaintDto>(complaint, "Complaint created successfully");
+
+            // Return 201 Created
+            return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, response);
         }
 
         /// <summary>
@@ -136,7 +140,7 @@ namespace CMS.Api.Controllers
             var complaints = await _complaintService.GetComplaintsForUserAsync(userId, role, filter);
             complaints.ForEach(PrepareComplaintUrl);
 
-            return Ok(complaints);
+            return Ok(new ApiResponse<List<ComplaintDto>>(complaints));
         }
 
         /// <summary>
@@ -180,7 +184,7 @@ namespace CMS.Api.Controllers
 
             PrepareComplaintUrl(complaint);
 
-            return Ok(complaint);
+            return Ok(new ApiResponse<ComplaintDto>(complaint));
         }
 
         /// <summary>
@@ -231,7 +235,7 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, managerId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict($"Complaint is currently locked by user {holder}");
+                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
             }
 
             try
@@ -241,7 +245,7 @@ namespace CMS.Api.Controllers
                 var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
                 if (updatedComplaint == null) return NotFound(); // Safety check
 
-                return Ok(updatedComplaint); ;
+                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Complaint assigned successfully"));
             }
             finally
             {
@@ -303,7 +307,7 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict($"Complaint is currently locked by user {holder}");
+                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
             }
 
             try
@@ -316,7 +320,7 @@ namespace CMS.Api.Controllers
                 var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
                 if (updatedComplaint == null) return NotFound();
 
-                return Ok(updatedComplaint);
+                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Status updated successfully"));
             }
             finally
             {
@@ -364,27 +368,32 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             if (file == null || file.Length == 0)
-                return BadRequest("No file uploaded.");
+                return BadRequest(new ApiResponse<string>("No file uploaded."));
 
+            // 1. Save File to Disk
             var relativePath = await _fileStorageService.SaveFileAsync(
                 file.OpenReadStream(),
                 file.FileName,
                 $"complaints/{id}");
 
-            await _complaintService.AddAttachmentAsync(
+            // 2. Save DB Record (IsScanned = false)
+            var attachmentId = await _complaintService.AddAttachmentAsync(
                 id, relativePath, file.FileName, file.Length, file.ContentType, userId);
 
-            // Fetch updated complaint to return for cache invalidation
+            // 3. Enqueue Job (The Fire-and-Forget Magic)
+            // We use the Interface here to keep API clean
+            BackgroundJob.Schedule<IAttachmentScanningJob>(
+                job => job.ExecuteAsync(attachmentId),
+                TimeSpan.FromSeconds(5)
+            );
+            // 4. Return
             var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
-
-            // FIX CS8604: Null check
             if (updatedComplaint != null)
             {
                 PrepareComplaintUrl(updatedComplaint);
-                return Ok(updatedComplaint);
+                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Attachment uploaded. Scanning in progress."));
             }
-
-            return NotFound();
+            return NotFound(new ApiResponse<object>("Complaint not found"));
         }
 
         /// <summary>
@@ -438,13 +447,13 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict($"Complaint is currently locked by user {holder}");
+                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
             }
 
             try
             {
                 await _complaintService.AddNoteAsync(id, request.Note, userId);
-                return Ok(new { Message = "Note added successfully" });
+                return Ok(new ApiResponse<object>(null, "Note added successfully"));
             }
             finally
             {
@@ -486,7 +495,7 @@ namespace CMS.Api.Controllers
         public async Task<IActionResult> GetVersions(Guid id)
         {
             var versions = await _complaintService.GetComplaintVersionsAsync(id);
-            return Ok(versions);
+            return Ok(new ApiResponse<List<ComplaintAuditLogDto>>(versions));
         }
 
         /// <summary>
@@ -546,7 +555,7 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict($"Complaint is currently locked by user {holder}");
+                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
             }
 
             try
@@ -554,15 +563,15 @@ namespace CMS.Api.Controllers
                 var updatedComplaint = await _complaintService.UpdateComplaintDetailsAsync(
                     id, request, userId, role);
                 PrepareComplaintUrl(updatedComplaint);
-                return Ok(updatedComplaint);
+                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Complaint updated successfully"));
             }
             catch (InvalidOperationException ex)
             {
-                return BadRequest(ex.Message);
+                return BadRequest(new ApiResponse<string>(ex.Message));
             }
             catch (KeyNotFoundException)
             {
-                return NotFound();
+                return NotFound(new ApiResponse<object>("Complaint not found"));
             }
             finally
             {
@@ -606,10 +615,10 @@ namespace CMS.Api.Controllers
             if (!success)
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict(new { Message = "Could not acquire lock", LockedBy = holder });
+                return Conflict(new ApiResponse<string>($"Could not acquire lock. Locked by: {holder}"));
             }
 
-            return Ok(new { Message = "Lock acquired" });
+            return Ok(new ApiResponse<object>(null, "Lock acquired"));
         }
 
         /// <summary>
@@ -640,7 +649,7 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             await _lockService.ReleaseLockAsync(id, userId);
-            return Ok(new { Message = "Lock released" });
+            return Ok(new ApiResponse<object>(null, "Lock released"));
         }
     }
 }

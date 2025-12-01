@@ -85,13 +85,12 @@ try
     });
 
     // 2. Raw Redis Connection (IConnectionMultiplexer) for advanced operations
-    //    Required for: CachedAttribute tags/sets, Rate Limiting, Idempotency locks
     builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     {
         try
         {
             var config = ConfigurationOptions.Parse(redisConnectionString);
-            config.AbortOnConnectFail = false; // Don't crash if Redis is temporarily down
+            config.AbortOnConnectFail = false;
             config.ConnectTimeout = 5000;
             config.SyncTimeout = 5000;
 
@@ -110,18 +109,15 @@ try
     // Identity Configuration
     builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
     {
-        // Password settings
         options.Password.RequireDigit = true;
         options.Password.RequiredLength = 8;
         options.Password.RequireNonAlphanumeric = false;
         options.Password.RequireUppercase = true;
         options.Password.RequireLowercase = true;
 
-        // User settings
         options.User.RequireUniqueEmail = true;
         options.SignIn.RequireConfirmedEmail = true;
 
-        // Lockout settings (coordinated with RateLimitMiddleware)
         options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
         options.Lockout.MaxFailedAccessAttempts = 5;
         options.Lockout.AllowedForNewUsers = true;
@@ -149,24 +145,22 @@ try
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ClockSkew = TimeSpan.Zero, // No tolerance for expired tokens
+            ClockSkew = TimeSpan.Zero,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
 
-        // Log authentication failures and handle SignalR token from query string
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
             {
                 var accessToken = context.Request.Query["access_token"];
-
-                // If the request is for our hub endpoint
                 var path = context.HttpContext.Request.Path;
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/notifications"))
+                
+                if (!string.IsNullOrEmpty(accessToken) && 
+                    (path.StartsWithSegments("/notifications") || path.StartsWithSegments("/api/Dashboard")))
                 {
-                    // Read the token out of the query string
                     context.Token = accessToken;
                 }
 
@@ -189,10 +183,10 @@ try
 
     builder.Services.AddHangfireServer(options =>
     {
-        options.WorkerCount = 2; // Limit concurrent background jobs
+        options.WorkerCount = 2;
     });
 
-    // HttpContext Access (required for getting IP addresses in services)
+    // HttpContext Access
     builder.Services.AddHttpContextAccessor();
 
     // Application Services (Dependency Injection)
@@ -208,36 +202,39 @@ try
     builder.Services.AddScoped<INotificationService, NotificationService>();
     builder.Services.AddScoped<INotificationJob, NotificationJob>();
     builder.Services.AddScoped<IDashboardService, DashboardService>();
+    builder.Services.AddScoped<IVirusScanService, ClamAvVirusScanService>();
+    builder.Services.AddScoped<IAttachmentScanningJob, AttachmentScanningJob>();
     builder.Services.AddSingleton<ICacheService>(sp =>
     {
         var distributedCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
         var connectionMultiplexer = sp.GetRequiredService<IConnectionMultiplexer>();
-
-        // Pass "CMS:" explicitly here
         return new RedisCacheService(distributedCache, connectionMultiplexer, "CMS:");
     });
     builder.Services.AddSingleton<SseService>();
 
-    // SignalR
     // SignalR with keep-alive configuration
     builder.Services.AddSignalR(options =>
     {
         options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
-        options.KeepAliveInterval = TimeSpan.FromSeconds(15);  // Changed from 30 to 15
+        options.KeepAliveInterval = TimeSpan.FromSeconds(15);
         options.HandshakeTimeout = TimeSpan.FromSeconds(30);
     });
 
     // API Controllers with Global Filters
+// API Controllers with Global Filters
     builder.Services.AddControllers(options =>
     {
-        // AOP: Apply validation globally to all endpoints
         options.Filters.Add<ValidationFilterAttribute>();
+    })
+    .AddJsonOptions(options =>
+    {
+        // ⬇️ THIS IS THE FIX ⬇️
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+        options.JsonSerializerOptions.DictionaryKeyPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
     });
 
     builder.Services.AddEndpointsApiExplorer();
 
-    // Swagger Configuration
-    // Swagger Configuration
     // Swagger Configuration
     builder.Services.AddSwaggerGen(c =>
     {
@@ -253,7 +250,6 @@ try
             }
         });
 
-        // Enable XML documentation comments
         var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
         var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
         if (File.Exists(xmlPath))
@@ -261,11 +257,9 @@ try
             c.IncludeXmlComments(xmlPath);
         }
 
-        // Add custom filters
         c.SchemaFilter<CMS.Api.Swagger.DateTimeExampleFilter>();
         c.OperationFilter<CMS.Api.Swagger.IdempotencyHeaderFilter>();
 
-        // JWT Bearer Authentication in Swagger
         c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
         {
             Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token.",
@@ -294,16 +288,24 @@ try
         });
     });
 
-
-    // CORS (if needed for frontend)
+    // ======================================
+    // CORS Configuration - CRITICAL FIX
+    // ======================================
     builder.Services.AddCors(options =>
     {
         options.AddPolicy("AllowFrontend", policy =>
         {
-            policy.SetIsOriginAllowed(_ => true)  // Allow any origin (DEV ONLY!)
+            policy.WithOrigins(
+                    "http://localhost:4200",      // Angular dev server
+                    "http://localhost:4201",      // Backup port
+                    "http://127.0.0.1:4200",      // Alternative localhost
+                    "https://localhost:4200"      // HTTPS variant
+                )
                 .AllowAnyMethod()
                 .AllowAnyHeader()
-                .AllowCredentials();
+                .AllowCredentials()
+                .WithExposedHeaders("Content-Disposition", "X-Request-Id")
+                .SetPreflightMaxAge(TimeSpan.FromMinutes(10)); // Cache preflight for 10 minutes
         });
     });
 
@@ -319,27 +321,26 @@ try
     // 2. REQUEST LOGGING - Log all requests early
     app.UseMiddleware<RequestLogMiddleware>();
 
-    // Development tools
+    // 3. Development tools
     if (app.Environment.IsDevelopment())
     {
         app.UseSwagger();
         app.UseSwaggerUI(c =>
         {
             c.SwaggerEndpoint("/swagger/v1/swagger.json", "CMS API v1");
+            c.RoutePrefix = "swagger"; // Access at /swagger
         });
     }
 
-    // 3. HTTPS Redirection (production only)
+    // 4. HTTPS Redirection (production only)
     if (app.Environment.IsProduction())
     {
         app.UseHttpsRedirection();
     }
 
-    // 4. SECURITY - IP Blacklist (block before rate limiting to save resources)
-    app.UseMiddleware<IpBlacklistMiddleware>();
-
-    // 5. RATE LIMITING - Prevent abuse
-    app.UseMiddleware<RateLimitMiddleware>();
+    // ⚠️ 5. CORS - MUST COME BEFORE ROUTING AND STATIC FILES
+    app.UseCors("AllowFrontend");
+    Log.Information("✅ CORS enabled for: http://localhost:4200");
 
     // 6. STATIC FILES - Serve uploaded files
     var webRootPath = app.Environment.WebRootPath
@@ -354,36 +355,41 @@ try
     app.UseStaticFiles(new StaticFileOptions
     {
         FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(webRootPath),
-        RequestPath = ""
+        RequestPath = "",
+        OnPrepareResponse = ctx =>
+        {
+            // Add CORS headers to static files as well
+            ctx.Context.Response.Headers.Append("Access-Control-Allow-Origin", "http://localhost:4200");
+            ctx.Context.Response.Headers.Append("Access-Control-Allow-Credentials", "true");
+        }
     });
 
-    // 7. CORS (if configured)
-    if (builder.Configuration.GetValue<bool>("EnableCors", false))
-    {
-        app.UseCors("AllowFrontend");
-    }
-
-    // 8. ROUTING
+    // 7. ROUTING
     app.UseRouting();
 
-    // 9. AUTHENTICATION - Identify the user
+    // 8. SECURITY - IP Blacklist (after routing, before auth)
+    app.UseMiddleware<IpBlacklistMiddleware>();
+
+    // 9. RATE LIMITING
+    app.UseMiddleware<RateLimitMiddleware>();
+
+    // 10. AUTHENTICATION - Identify the user
     app.UseAuthentication();
 
-    // 10. AUTHORIZATION - Check permissions
+    // 11. AUTHORIZATION - Check permissions
     app.UseAuthorization();
 
-    // 11. IDEMPOTENCY - Handle duplicate POST/PUT/PATCH requests
-    //     (Must be AFTER auth to scope idempotency keys to users)
+    // 12. IDEMPOTENCY - Handle duplicate POST/PUT/PATCH requests
     app.UseMiddleware<IdempotencyMiddleware>();
 
-    // 12. HANGFIRE DASHBOARD - Background job monitoring (protected)
+    // 13. HANGFIRE DASHBOARD - Background job monitoring (protected)
     app.UseHangfireDashboard("/hangfire", new DashboardOptions
     {
         Authorization = new[] { new HangfireAuthorizationFilter() },
         DashboardTitle = "CMS Background Jobs"
     });
 
-    // 13. MAP CONTROLLERS
+    // 14. MAP CONTROLLERS AND HUBS
     app.MapControllers();
     app.MapHub<NotificationHub>("/notifications");
 
@@ -391,6 +397,14 @@ try
     app.MapGet("/health", () => Results.Ok(new
     {
         status = "healthy",
+        timestamp = DateTime.UtcNow,
+        environment = app.Environment.EnvironmentName
+    }));
+
+    // CORS test endpoint (for debugging)
+    app.MapGet("/api/test-cors", () => Results.Ok(new
+    {
+        message = "CORS is working!",
         timestamp = DateTime.UtcNow
     }));
 
@@ -398,11 +412,10 @@ try
     //    4. BACKGROUND JOBS SETUP
     // ======================================
 
-    // Schedule periodic cleanup jobs
     RecurringJob.AddOrUpdate<ISecurityService>(
         "cleanup-old-login-attempts",
         service => service.CleanupOldLoginAttemptsAsync(30),
-        Cron.Daily); // Run daily
+        Cron.Daily);
 
     // ======================================
     //    5. DATABASE INITIALIZATION
@@ -433,6 +446,12 @@ try
 
     Log.Information("✅ CMS API started successfully");
     Log.Information("🌐 Listening on: {Urls}", string.Join(", ", app.Urls));
+    Log.Information("📡 SignalR Hub: /notifications");
+    Log.Information("🔧 Hangfire Dashboard: /hangfire");
+    if (app.Environment.IsDevelopment())
+    {
+        Log.Information("📚 Swagger UI: /swagger");
+    }
 
     app.Run();
 }

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc.Filters;
 using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json; // Required
 
 namespace CMS.Api.Filters;
 
@@ -14,16 +15,18 @@ public class CachedAttribute : Attribute, IAsyncActionFilter
     private readonly int _ttlSeconds;
     private readonly string _baseTag;
 
-    // Redis (Server) Configuration
     public bool IsShared { get; set; } = false;
-
-    // Browser (Client) Configuration
-    // Set to TRUE if you want the browser to store data. 
-    // Set to FALSE (Default) to force the browser to always ask the server.
     public bool AllowClientCache { get; set; } = false;
 
-    // Concurrency
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
+
+    // ✅ ADDED: Standard options to force CamelCase
+    private static readonly JsonSerializerOptions _serializerOptions = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false
+    };
 
     public CachedAttribute(int ttlSeconds, string baseTag)
     {
@@ -50,10 +53,7 @@ public class CachedAttribute : Attribute, IAsyncActionFilter
 
         if (cachedWrapper != null)
         {
-            // Even if client cache is off, we can still check ETag (304) to save bandwidth
-            // if the browser happened to hold onto the ETag.
             if (TryServe304(context, cachedWrapper.Content)) return;
-
             ServeResponse(context, cachedWrapper);
             return;
         }
@@ -76,7 +76,9 @@ public class CachedAttribute : Attribute, IAsyncActionFilter
 
                 if (executedContext.Result is OkObjectResult okResult)
                 {
-                    var jsonResponse = System.Text.Json.JsonSerializer.Serialize(okResult.Value);
+                    // ✅ FIXED: Pass _serializerOptions here
+                    var jsonResponse = JsonSerializer.Serialize(okResult.Value, _serializerOptions);
+
                     var wrapper = new CacheWrapper
                     {
                         Content = jsonResponse,
@@ -89,8 +91,6 @@ public class CachedAttribute : Attribute, IAsyncActionFilter
 
                     await cacheService.SetAsync(cacheKey, wrapper, TimeSpan.FromSeconds(_ttlSeconds), tags.ToArray());
 
-                    // IMPORTANT: Serve the response correctly with headers
-                    // We must manually set the ETag here for the first response
                     ServeResponse(executedContext, wrapper);
                 }
             }
@@ -106,33 +106,23 @@ public class CachedAttribute : Attribute, IAsyncActionFilter
         }
     }
 
-    // --- UPDATED HELPERS ---
-
     private void ServeResponse(ActionContext context, CacheWrapper wrapper)
     {
         var response = context.HttpContext.Response;
-
-        // Always calculate ETag (It allows for 304 Not Modified even if no-cache is set)
         var etag = GenerateETag(wrapper.Content);
         response.Headers.ETag = etag;
 
         if (AllowClientCache)
         {
-            // Browser can store data for _ttlSeconds
             response.Headers.CacheControl = $"public,max-age={_ttlSeconds}";
         }
         else
         {
-            // Browser MUST NOT store data. Must check with server every time.
-            // "no-cache" means: You can store it, but you must validate ETag with server before showing it.
-            // "no-store" means: Don't store it at all.
             response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
             response.Headers.Pragma = "no-cache";
             response.Headers.Expires = "0";
         }
 
-        // If we are modifying the ExecutedContext (initial load), we don't need to replace the Result.
-        // If we are in the caching hit (ActionExecutingContext), we do.
         if (context is ActionExecutingContext executingContext)
         {
             executingContext.Result = new ContentResult

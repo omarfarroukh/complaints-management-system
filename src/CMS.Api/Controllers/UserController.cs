@@ -187,7 +187,7 @@ public class UsersController : ControllerBase
     {
         var adminId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var msg = await _userService.CreateEmployeeAsync(dto, adminId!);
-        return Ok(new ApiResponse<string>(msg));
+        return Ok(new ApiResponse<bool>(true, msg));
     }
 
     /// <summary>
@@ -240,6 +240,6 @@ public class UsersController : ControllerBase
     {
         var adminId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var msg = await _userService.CreateManagerAsync(dto, adminId!);
-        return Ok(new ApiResponse<string>(msg));
+        return Ok(new ApiResponse<bool>(true, msg));
     }
 }

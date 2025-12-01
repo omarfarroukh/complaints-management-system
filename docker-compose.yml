@@ -1,4 +1,13 @@
 services:
+  clamav:
+    image: clamav/clamav:latest
+    container_name: clamav_service
+    restart: unless-stopped
+    volumes:
+      - clamav_db:/var/lib/clamav
+    networks:
+      - shared_network
+
   cms_api:
     build:
       context: .
@@ -26,6 +35,11 @@ services:
           - SmtpSettings__SenderEmail=${SMTP_SENDER_EMAIL}
           - SmtpSettings__Password=${SMTP_PASSWORD}
 
+          # CLAMAV
+          - CLAMAV_HOST=clamav
+          - CLAMAV_PORT=3310
+    depends_on: 
+      - clamav
     networks:
       - shared_network
     volumes:
@@ -47,7 +61,8 @@ services:
       - cms_api
     networks:
       - shared_network
-
+volumes:
+  clamav_db:
 # This tells Docker: "Don't create a new network. Use the existing one named 'shared-services-network'"
 networks:
   shared_network:

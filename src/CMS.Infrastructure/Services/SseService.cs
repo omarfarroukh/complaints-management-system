@@ -84,7 +84,7 @@ public class SseService
             {
                 data = await dashboardService.GetAdminStatsAsync(connection.Filter);
             }
-            else if (connection.Role == "Manager")
+            else if (connection.Role == "DepartmentManager")
             {
                 data = await dashboardService.GetManagerStatsAsync(connection.UserId, connection.Filter);
             }

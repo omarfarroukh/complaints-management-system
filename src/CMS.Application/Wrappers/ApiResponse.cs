@@ -1,15 +1,23 @@
+using System.Text.Json.Serialization; // 👈 Import this
+
 namespace CMS.Application.Wrappers;
 
 public class ApiResponse<T>
 {
+    [JsonPropertyName("succeeded")]
     public bool Succeeded { get; set; }
-    public string Message { get; set; } = string.Empty; // Initialize to avoid null warning
-    public List<string>? Errors { get; set; } // "?" means it allows nulls
-    public T? Data { get; set; }              // "?" means it allows nulls
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+
+    [JsonPropertyName("errors")]
+    public List<string>? Errors { get; set; }
+
+    [JsonPropertyName("data")]
+    public T? Data { get; set; }
 
     public ApiResponse() { }
 
-    // Constructor for Success
     public ApiResponse(T? data, string message = "Success")
     {
         Succeeded = true;
@@ -18,12 +26,11 @@ public class ApiResponse<T>
         Errors = null;
     }
 
-    // Constructor for Failure
     public ApiResponse(string message)
     {
         Succeeded = false;
         Message = message;
         Errors = new List<string> { message };
-        Data = default; // Sets Data to null
+        Data = default;
     }
 }

@@ -172,7 +172,7 @@ namespace CMS.Infrastructure.Services
                 job.SendComplaintStatusChangedNotificationAsync(complaint.CitizenId, complaint.Id, complaint.Title, status));
         }
 
-        public async Task AddAttachmentAsync(Guid complaintId, string filePath, string fileName, long fileSize, string mimeType, string userId)
+        public async Task<Guid> AddAttachmentAsync(Guid complaintId, string filePath, string fileName, long fileSize, string mimeType, string userId)
         {
             var attachment = new ComplaintAttachment
             {
@@ -182,11 +182,12 @@ namespace CMS.Infrastructure.Services
                 FileSize = fileSize,
                 MimeType = mimeType,
                 UploadedByUserId = userId,
-                IsScanned = false
+                IsScanned = false // Important: Not scanned yet
             };
 
             _context.ComplaintAttachments.Add(attachment);
             await _context.SaveChangesAsync();
+
 
             // Notification
             var complaint = await _context.Complaints.FindAsync(complaintId);
@@ -195,6 +196,7 @@ namespace CMS.Infrastructure.Services
                 BackgroundJob.Enqueue<INotificationJob>(job =>
                    job.SendComplaintAttachmentUploadedNotificationAsync(complaint.Id, fileName));
             }
+            return attachment.Id;
         }
 
         public async Task AddNoteAsync(Guid complaintId, string note, string userId)

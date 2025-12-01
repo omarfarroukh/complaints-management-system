@@ -42,7 +42,7 @@ public class DashboardController : ControllerBase
     /// <param name="from">Filter start date</param>
     /// <param name="to">Filter end date</param>
     [HttpGet("manager/stream")]
-    [Authorize(Roles = "Manager")]
+    [Authorize(Roles = "DepartmentManager")]
     public async Task StreamManagerStats([FromQuery] DateTime? from, [FromQuery] DateTime? to)
     {
         Response.Headers.Append("Content-Type", "text/event-stream");
@@ -52,6 +52,6 @@ public class DashboardController : ControllerBase
         var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var filter = new DashboardFilterDto { From = from, To = to };
 
-        await _sseService.AddConnectionAsync(HttpContext, userId!, "Manager", filter);
+        await _sseService.AddConnectionAsync(HttpContext, userId!, "DepartmentManager", filter);
     }
 }
