@@ -359,7 +359,12 @@ public class AuthService : IAuthService
             await _userManager.UpdateAsync(user);
         }
     }
-
+    public async Task<bool> GetMfaStatusAsync(string userId)
+    {
+        var user = await _userManager.FindByIdAsync(userId);
+        return user != null && user.TwoFactorEnabled;
+    }
+    
     private async Task<AuthResponseDto> GenerateTokenPairAsync(ApplicationUser user)
     {
         BackgroundJob.Enqueue<IAuthService>(x => x.CleanupTokensAsync(user.Id));

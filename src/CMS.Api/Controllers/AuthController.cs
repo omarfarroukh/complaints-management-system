@@ -326,7 +326,18 @@ public class AuthController : ControllerBase
         await _authService.DisableMfaAsync(userId!);
         return Ok(new ApiResponse<bool>(true, "MFA Disabled"));
     }
-
+    /// <summary>
+    /// Check if MFA is currently enabled for the user
+    /// </summary>
+    [Authorize]
+    [HttpGet("mfa-status")]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMfaStatus()
+    {
+        var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var isEnabled = await _authService.GetMfaStatusAsync(userId!);
+        return Ok(new ApiResponse<bool>(isEnabled));
+    }
     /// <summary>
     /// Check if an email is already used
     /// </summary>

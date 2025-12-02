@@ -79,7 +79,7 @@ namespace CMS.Infrastructure.Services
             {
                 "email" => filter.IsDescending ? query.OrderByDescending(u => u.Email) : query.OrderBy(u => u.Email),
                 "role" => filter.IsDescending ? query.OrderByDescending(u => u.UserType) : query.OrderBy(u => u.UserType),
-                _ => query.OrderByDescending(u => u.Id) 
+                _ => query.OrderByDescending(u => u.Id)
             };
 
             return await query
@@ -161,9 +161,9 @@ namespace CMS.Infrastructure.Services
             await _context.SaveChangesAsync();
 
             // FIX: Use Configuration for base URL
-            var baseUrl = _configuration["ClientApp:BaseUrl"] ?? "http://localhost:3000";
-            var link = $"{baseUrl}/activate?token={tokenStr}";
-            
+            var baseUrl = _configuration["ClientApp:BaseUrl"] ?? "http://localhost:4200";
+            var link = $"{baseUrl}/auth/activate?token={tokenStr}";
+
             BackgroundJob.Enqueue<IEmailService>(x => x.SendEmailAsync(user.Email!, "Activate Account", $"Link: {link}"));
 
             return "User created. Activation email sent.";

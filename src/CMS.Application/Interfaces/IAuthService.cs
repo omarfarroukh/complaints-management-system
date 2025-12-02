@@ -19,5 +19,6 @@ public interface IAuthService
     Task<MfaSetupResponseDto> GenerateMfaSetupAsync(string userId);
     Task EnableMfaAsync(string userId, string code);
     Task DisableMfaAsync(string userId);
-
+    Task<bool> GetMfaStatusAsync(string userId);
+    
 }
