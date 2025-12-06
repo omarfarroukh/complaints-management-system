@@ -18,7 +18,9 @@ services:
     environment:
           # 1. Environment
           - ASPNETCORE_ENVIRONMENT=${ASPNET_ENV}
-
+          - DISABLE_RATE_LIMITING=true
+          - SEED_USER_COUNT=0
+          - SEED_COMPLAINTS_PER_USER=0
           # 2. Connection Strings
           - ConnectionStrings__DefaultConnection=${CMS_DB_CONNECTION_STRING}
           - ConnectionStrings__Redis=${REDIS_CONNECTION_STRING}
@@ -61,6 +63,24 @@ services:
       - cms_api
     networks:
       - shared_network
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: cms_ngrok
+    restart: unless-stopped
+    command:
+      - "http"
+      - "https://nginx:443"
+      - "--url=optimum-kodiak-hardy.ngrok-free.app"
+      - "--host-header=localhost"
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
+    depends_on:
+      - nginx
+    networks:
+      - shared_network
+
 volumes:
   clamav_db:
 # This tells Docker: "Don't create a new network. Use the existing one named 'shared-services-network'"

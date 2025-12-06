@@ -16,6 +16,7 @@ namespace CMS.Infrastructure.Persistence
         }
 
         public DbSet<RefreshToken> RefreshTokens { get; set; }
+        public DbSet<UserDevice> UserDevices { get; set; } // Added this
         public DbSet<IpBlacklist> IpBlacklist { get; set; }
         public DbSet<UserProfile> UserProfiles { get; set; }
         public DbSet<AccountActivationToken> AccountActivationTokens { get; set; }
@@ -51,7 +52,7 @@ namespace CMS.Infrastructure.Persistence
             // =========================================================================
             // 1. Identity & System Configuration
             // =========================================================================
-            
+
             // Rename Identity Tables (Cleaner DB Schema)
             builder.Entity<ApplicationUser>().ToTable("Users");
             builder.Entity<Microsoft.AspNetCore.Identity.IdentityRole>().ToTable("Roles");
@@ -115,7 +116,7 @@ namespace CMS.Infrastructure.Persistence
             // =========================================================================
             // 4. Notifications
             // =========================================================================
-            
+
             builder.Entity<Notification>(entity =>
             {
                 entity.HasIndex(n => n.UserId);
@@ -151,7 +152,7 @@ namespace CMS.Infrastructure.Persistence
                 entity.HasOne(c => c.Citizen)
                       .WithMany()
                       .HasForeignKey(c => c.CitizenId)
-                      .OnDelete(DeleteBehavior.Restrict); 
+                      .OnDelete(DeleteBehavior.Restrict);
 
                 entity.HasOne(c => c.AssignedEmployee)
                       .WithMany()

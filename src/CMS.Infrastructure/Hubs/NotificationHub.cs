@@ -20,100 +20,23 @@ namespace CMS.Infrastructure.Hubs
             var userId = Context.UserIdentifier;
             if (!string.IsNullOrEmpty(userId))
             {
-                // Send unread count when user connects
+                // 1. Send Unread Count
                 var unreadCount = await _notificationService.GetUnreadCountAsync(userId);
                 await Clients.Caller.SendAsync("UnreadCountUpdated", unreadCount);
-                
-                // Auto-join department group if user has DepartmentId claim
-                var departmentIdClaim = Context.User?.FindFirst("DepartmentId");
-                if (departmentIdClaim != null && !string.IsNullOrEmpty(departmentIdClaim.Value))
+
+                // 2. Auto-join Department Group
+                var departmentId = Context.User?.FindFirst("DepartmentId")?.Value;
+                if (!string.IsNullOrEmpty(departmentId))
                 {
-                    await Groups.AddToGroupAsync(Context.ConnectionId, departmentIdClaim.Value);
+                    await Groups.AddToGroupAsync(Context.ConnectionId, departmentId);
                 }
             }
             await base.OnConnectedAsync();
         }
 
-        // Client → Server: Get unread notifications
-        public async Task GetUnreadNotifications()
-        {
-            var userId = Context.UserIdentifier;
-            if (string.IsNullOrEmpty(userId)) return;
+        // --- CLIENT CALLABLE METHODS (Must match Angular .invoke() names exactly) ---
 
-            var notifications = await _notificationService.GetUnreadNotificationsAsync(userId);
-            await Clients.Caller.SendAsync("NotificationsLoaded", notifications);
-        }
-
-        // Client → Server: Get recent notifications with pagination
-        public async Task GetRecentNotifications(int count = 50)
-        {
-            var userId = Context.UserIdentifier;
-            if (string.IsNullOrEmpty(userId)) return;
-
-            var notifications = await _notificationService.GetRecentNotificationsAsync(userId, count);
-            await Clients.Caller.SendAsync("NotificationsLoaded", notifications);
-        }
-
-        // Client → Server: Mark notification as read
-        public async Task MarkAsRead(Guid notificationId)
-        {
-            var userId = Context.UserIdentifier;
-            if (string.IsNullOrEmpty(userId)) return;
-
-            try
-            {
-                await _notificationService.MarkAsReadAsync(notificationId, userId);
-
-                // Confirm to client
-                await Clients.Caller.SendAsync("NotificationMarkedAsRead", notificationId);
-
-                // Update unread count
-                var unreadCount = await _notificationService.GetUnreadCountAsync(userId);
-                await Clients.Caller.SendAsync("UnreadCountUpdated", unreadCount);
-            }
-            catch (KeyNotFoundException)
-            {
-                await Clients.Caller.SendAsync("Error", "Notification not found");
-            }
-        }
-
-        // Client → Server: Mark all as read
-        public async Task MarkAllAsRead()
-        {
-            var userId = Context.UserIdentifier;
-            if (string.IsNullOrEmpty(userId)) return;
-
-            await _notificationService.MarkAllAsReadAsync(userId);
-
-            // Notify client
-            await Clients.Caller.SendAsync("AllNotificationsMarkedAsRead");
-            await Clients.Caller.SendAsync("UnreadCountUpdated", 0);
-        }
-
-        // Client → Server: Delete notification
-        public async Task DeleteNotification(Guid notificationId)
-        {
-            var userId = Context.UserIdentifier;
-            if (string.IsNullOrEmpty(userId)) return;
-
-            try
-            {
-                await _notificationService.DeleteNotificationAsync(notificationId, userId);
-
-                // Confirm deletion
-                await Clients.Caller.SendAsync("NotificationDeleted", notificationId);
-
-                // Update unread count
-                var unreadCount = await _notificationService.GetUnreadCountAsync(userId);
-                await Clients.Caller.SendAsync("UnreadCountUpdated", unreadCount);
-            }
-            catch (KeyNotFoundException)
-            {
-                await Clients.Caller.SendAsync("Error", "Notification not found");
-            }
-        }
-
-        // Client → Server: Get unread count
+        // 1. Get Unread Count (The one that was missing/erroring)
         public async Task GetUnreadCount()
         {
             var userId = Context.UserIdentifier;
@@ -123,34 +46,52 @@ namespace CMS.Infrastructure.Hubs
             await Clients.Caller.SendAsync("UnreadCountUpdated", count);
         }
 
-        // Server → Client methods (called by other services):
-        // - ReceiveNotification(NotificationDto)
-        // - NotificationsLoaded(List<NotificationDto>)
-        // - UnreadCountUpdated(int)
-        // - NotificationMarkedAsRead(Guid)
-        // - AllNotificationsMarkedAsRead()
-        // - NotificationDeleted(Guid)
-        // - Error(string)
-
-        // Legacy methods for department/user messaging (keep for backward compatibility)
-        public async Task SendMessageToUser(string userId, string message)
+        // 2. Get Recent Notifications
+        public async Task GetRecentNotifications(int count = 50)
         {
-            await Clients.User(userId).SendAsync("ReceiveMessage", message);
+            var userId = Context.UserIdentifier;
+            if (string.IsNullOrEmpty(userId)) return;
+
+            var notifications = await _notificationService.GetRecentNotificationsAsync(userId, count);
+            await Clients.Caller.SendAsync("NotificationsLoaded", notifications);
         }
 
-        public async Task SendMessageToDepartment(string departmentId, string message)
+        // 3. Mark As Read
+        public async Task MarkAsRead(Guid notificationId)
         {
-            await Clients.Group(departmentId).SendAsync("ReceiveDepartmentMessage", message);
+            var userId = Context.UserIdentifier;
+            if (string.IsNullOrEmpty(userId)) return;
+
+            await _notificationService.MarkAsReadAsync(notificationId, userId);
+            await Clients.Caller.SendAsync("NotificationMarkedAsRead", notificationId);
+
+            // Push update to count
+            var unreadCount = await _notificationService.GetUnreadCountAsync(userId);
+            await Clients.Caller.SendAsync("UnreadCountUpdated", unreadCount);
         }
 
-        public async Task JoinDepartmentGroup(string departmentId)
+        // 4. Mark All Read
+        public async Task MarkAllAsRead()
         {
-            await Groups.AddToGroupAsync(Context.ConnectionId, departmentId);
+            var userId = Context.UserIdentifier;
+            if (string.IsNullOrEmpty(userId)) return;
+
+            await _notificationService.MarkAllAsReadAsync(userId);
+            await Clients.Caller.SendAsync("AllNotificationsMarkedAsRead");
+            await Clients.Caller.SendAsync("UnreadCountUpdated", 0);
         }
 
-        public async Task LeaveDepartmentGroup(string departmentId)
+        // 5. Delete
+        public async Task DeleteNotification(Guid notificationId)
         {
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, departmentId);
+            var userId = Context.UserIdentifier;
+            if (string.IsNullOrEmpty(userId)) return;
+
+            await _notificationService.DeleteNotificationAsync(notificationId, userId);
+            await Clients.Caller.SendAsync("NotificationDeleted", notificationId);
+
+            var unreadCount = await _notificationService.GetUnreadCountAsync(userId);
+            await Clients.Caller.SendAsync("UnreadCountUpdated", unreadCount);
         }
     }
 }

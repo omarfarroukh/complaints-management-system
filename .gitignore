@@ -225,3 +225,5 @@ postgres_data/
 timescaledb_data/
 redis_data/
 grafana_data/
+
+**/firebase-service-account.json

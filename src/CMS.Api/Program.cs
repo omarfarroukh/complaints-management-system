@@ -157,8 +157,8 @@ try
             {
                 var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
-                
-                if (!string.IsNullOrEmpty(accessToken) && 
+
+                if (!string.IsNullOrEmpty(accessToken) &&
                     (path.StartsWithSegments("/notifications") || path.StartsWithSegments("/api/Dashboard")))
                 {
                     context.Token = accessToken;
@@ -204,6 +204,7 @@ try
     builder.Services.AddScoped<IDashboardService, DashboardService>();
     builder.Services.AddScoped<IVirusScanService, ClamAvVirusScanService>();
     builder.Services.AddScoped<IAttachmentScanningJob, AttachmentScanningJob>();
+    builder.Services.AddScoped<IPushNotificationService, FirebasePushNotificationService>();
     builder.Services.AddSingleton<ICacheService>(sp =>
     {
         var distributedCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
@@ -212,16 +213,18 @@ try
     });
     builder.Services.AddSingleton<SseService>();
 
-    // SignalR with keep-alive configuration
     builder.Services.AddSignalR(options =>
     {
         options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
         options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-        options.HandshakeTimeout = TimeSpan.FromSeconds(30);
+    })
+    .AddJsonProtocol(options => // 👈 ADD THIS BLOCK
+    {
+        options.PayloadSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
     });
 
     // API Controllers with Global Filters
-// API Controllers with Global Filters
+    // API Controllers with Global Filters
     builder.Services.AddControllers(options =>
     {
         options.Filters.Add<ValidationFilterAttribute>();
@@ -295,19 +298,29 @@ try
     {
         options.AddPolicy("AllowFrontend", policy =>
         {
-            policy.WithOrigins(
-                    "http://localhost:4200",      // Angular dev server
-                    "http://localhost:4201",      // Backup port
-                    "http://127.0.0.1:4200",      // Alternative localhost
-                    "https://localhost:4200"      // HTTPS variant
-                )
+            policy
+                // 1. This allows ANY URL to talk to your API (localhost, zrok, phone IP, etc.)
+                //    This is perfect for dev tunnels like zrok.
+                .SetIsOriginAllowed(_ => true)
+
                 .AllowAnyMethod()
                 .AllowAnyHeader()
+
+                // 2. Required for SignalR / Auth Cookies
                 .AllowCredentials()
+
                 .WithExposedHeaders("Content-Disposition", "X-Request-Id")
-                .SetPreflightMaxAge(TimeSpan.FromMinutes(10)); // Cache preflight for 10 minutes
+                .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
         });
     });
+
+
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor |
+                                   Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto;
+    });
+
 
     var app = builder.Build();
 
@@ -370,8 +383,16 @@ try
     // 8. SECURITY - IP Blacklist (after routing, before auth)
     app.UseMiddleware<IpBlacklistMiddleware>();
 
-    // 9. RATE LIMITING
-    app.UseMiddleware<RateLimitMiddleware>();
+    // 9. RATE LIMITING - can be disabled during load tests by setting DISABLE_RATE_LIMITING=true
+    var disableRateLimitEnv = Environment.GetEnvironmentVariable("DISABLE_RATE_LIMITING");
+    if (!string.IsNullOrEmpty(disableRateLimitEnv) && disableRateLimitEnv.Equals("true", StringComparison.OrdinalIgnoreCase))
+    {
+        Log.Warning("DISABLE_RATE_LIMITING=true detected - skipping rate limit middleware (suitable for load testing)");
+    }
+    else
+    {
+        app.UseMiddleware<RateLimitMiddleware>();
+    }
 
     // 10. AUTHENTICATION - Identify the user
     app.UseAuthentication();
@@ -433,7 +454,7 @@ try
                 await context.Database.MigrateAsync();
 
                 Log.Information("Seeding database...");
-                await DbSeeder.SeedUsersAsync(scope.ServiceProvider);
+                // await DbSeeder.SeedUsersAsync(scope.ServiceProvider);
 
                 Log.Information("✅ Database initialization complete");
             }

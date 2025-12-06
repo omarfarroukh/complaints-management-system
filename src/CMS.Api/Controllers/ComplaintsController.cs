@@ -101,7 +101,7 @@ namespace CMS.Api.Controllers
             var response = new ApiResponse<ComplaintDto>(complaint, "Complaint created successfully");
 
             // Return 201 Created
-            return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, response);
+            return CreatedAtAction(nameof(GetComplaintById), new { id = complaint.Id }, complaint);
         }
 
         /// <summary>
@@ -128,7 +128,7 @@ namespace CMS.Api.Controllers
         /// <response code="401">Not authenticated</response>
         [HttpGet]
         [Cached(60, "complaints")]
-        [ProducesResponseType(typeof(List<ComplaintDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(PagedResult<ComplaintDto>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
         public async Task<IActionResult> GetComplaints([FromQuery] ComplaintFilterDto filter)
         {
@@ -137,10 +137,15 @@ namespace CMS.Api.Controllers
 
             if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(role)) return Unauthorized();
 
-            var complaints = await _complaintService.GetComplaintsForUserAsync(userId, role, filter);
-            complaints.ForEach(PrepareComplaintUrl);
+            // ✅ Enforce safe page size (never allow > 50)
+            filter.Take = Math.Min(filter.Take, 50);
 
-            return Ok(new ApiResponse<List<ComplaintDto>>(complaints));
+            var result = await _complaintService.GetComplaintsForUserAsync(userId, role, filter);
+            
+            // ✅ Prepare URLs for the current page only
+            result.Items.ForEach(PrepareComplaintUrl);
+
+            return Ok(result);
         }
 
         /// <summary>
@@ -184,7 +189,7 @@ namespace CMS.Api.Controllers
 
             PrepareComplaintUrl(complaint);
 
-            return Ok(new ApiResponse<ComplaintDto>(complaint));
+            return Ok(complaint);
         }
 
         /// <summary>
@@ -235,7 +240,7 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, managerId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
+                return Conflict($"Complaint is currently locked by user {holder}");
             }
 
             try
@@ -245,7 +250,7 @@ namespace CMS.Api.Controllers
                 var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
                 if (updatedComplaint == null) return NotFound(); // Safety check
 
-                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Complaint assigned successfully"));
+                return Ok(updatedComplaint);
             }
             finally
             {
@@ -307,7 +312,7 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
+                return Conflict($"Complaint is currently locked by user {holder}");
             }
 
             try
@@ -320,7 +325,7 @@ namespace CMS.Api.Controllers
                 var updatedComplaint = await _complaintService.GetComplaintByIdAsync(id);
                 if (updatedComplaint == null) return NotFound();
 
-                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Status updated successfully"));
+                return Ok(updatedComplaint);
             }
             finally
             {
@@ -368,7 +373,7 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             if (file == null || file.Length == 0)
-                return BadRequest(new ApiResponse<string>("No file uploaded."));
+                return BadRequest("No file uploaded.");
 
             // 1. Save File to Disk
             var relativePath = await _fileStorageService.SaveFileAsync(
@@ -391,7 +396,7 @@ namespace CMS.Api.Controllers
             if (updatedComplaint != null)
             {
                 PrepareComplaintUrl(updatedComplaint);
-                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Attachment uploaded. Scanning in progress."));
+                return Ok(updatedComplaint);
             }
             return NotFound(new ApiResponse<object>("Complaint not found"));
         }
@@ -447,13 +452,13 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
+                return Conflict($"Complaint is currently locked by user {holder}");
             }
 
             try
             {
                 await _complaintService.AddNoteAsync(id, request.Note, userId);
-                return Ok(new ApiResponse<object>(null, "Note added successfully"));
+                return Ok(new { message = "Note added successfully" });
             }
             finally
             {
@@ -495,7 +500,7 @@ namespace CMS.Api.Controllers
         public async Task<IActionResult> GetVersions(Guid id)
         {
             var versions = await _complaintService.GetComplaintVersionsAsync(id);
-            return Ok(new ApiResponse<List<ComplaintAuditLogDto>>(versions));
+            return Ok(versions);
         }
 
         /// <summary>
@@ -555,7 +560,7 @@ namespace CMS.Api.Controllers
             if (!await _lockService.AcquireLockAsync(id, userId))
             {
                 var holder = await _lockService.GetCurrentLockHolderAsync(id);
-                return Conflict(new ApiResponse<string>($"Complaint is currently locked by user {holder}"));
+                return Conflict($"Complaint is currently locked by user {holder}");
             }
 
             try
@@ -563,7 +568,7 @@ namespace CMS.Api.Controllers
                 var updatedComplaint = await _complaintService.UpdateComplaintDetailsAsync(
                     id, request, userId, role);
                 PrepareComplaintUrl(updatedComplaint);
-                return Ok(new ApiResponse<ComplaintDto>(updatedComplaint, "Complaint updated successfully"));
+                return Ok(updatedComplaint);
             }
             catch (InvalidOperationException ex)
             {
@@ -571,7 +576,7 @@ namespace CMS.Api.Controllers
             }
             catch (KeyNotFoundException)
             {
-                return NotFound(new ApiResponse<object>("Complaint not found"));
+                return NotFound("Complaint not found");
             }
             finally
             {
@@ -618,7 +623,7 @@ namespace CMS.Api.Controllers
                 return Conflict(new ApiResponse<string>($"Could not acquire lock. Locked by: {holder}"));
             }
 
-            return Ok(new ApiResponse<object>(null, "Lock acquired"));
+            return Ok(new { message = "Lock acquired" });
         }
 
         /// <summary>
@@ -649,7 +654,7 @@ namespace CMS.Api.Controllers
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             await _lockService.ReleaseLockAsync(id, userId);
-            return Ok(new ApiResponse<object>(null, "Lock released"));
+            return Ok(new { message = "Lock released" });
         }
     }
 }

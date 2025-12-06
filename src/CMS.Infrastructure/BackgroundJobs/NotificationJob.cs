@@ -1,8 +1,11 @@
 using CMS.Application.DTOs;
 using CMS.Application.Interfaces;
 using CMS.Domain.Common;
+using CMS.Domain.Entities;
 using CMS.Infrastructure.Hubs;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace CMS.Infrastructure.BackgroundJobs
@@ -13,121 +16,296 @@ namespace CMS.Infrastructure.BackgroundJobs
         private readonly IHubContext<NotificationHub> _hubContext;
         private readonly ILogger<NotificationJob> _logger;
         private readonly IComplaintService _complaintService;
+        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly IPushNotificationService _pushNotificationService;
 
         public NotificationJob(
             INotificationService notificationService,
             IHubContext<NotificationHub> hubContext,
             ILogger<NotificationJob> logger,
-            IComplaintService complaintService)
+            IComplaintService complaintService,
+            UserManager<ApplicationUser> userManager,
+            IPushNotificationService pushNotificationService)
         {
             _notificationService = notificationService;
             _hubContext = hubContext;
             _logger = logger;
             _complaintService = complaintService;
+            _userManager = userManager;
+            _pushNotificationService = pushNotificationService;
         }
 
+        // --- 1. ASSIGNED ---
         public async Task SendComplaintAssignedNotificationAsync(string employeeId, Guid complaintId, string complaintTitle)
         {
             try
             {
-                _logger.LogInformation("Sending complaint assigned notification to employee {EmployeeId}", employeeId);
-
                 var complaint = await _complaintService.GetComplaintByIdAsync(complaintId);
-                if (complaint == null)
-                {
-                    _logger.LogWarning("Complaint {ComplaintId} not found, skipping notifications", complaintId);
-                    return;
-                }
+                if (complaint == null) return;
 
-                var employeeNotificationId = await _notificationService.CreateNotificationAsync(
+                // Notify Employee
+                await CreateAndSendAsync(
                     employeeId,
                     "New Assignment",
                     $"You have been assigned a new complaint: {complaintTitle}",
                     NotificationType.Info,
                     "Complaint",
-                    complaintId);
+                    complaintId
+                );
 
-                var employeeNotification = await _notificationService.GetNotificationByIdAsync(employeeNotificationId, employeeId);
-                if (employeeNotification != null)
-                {
-                    await _hubContext.Clients.User(employeeId).SendAsync("ReceiveNotification", employeeNotification);
-                }
-
-                var citizenNotificationId = await _notificationService.CreateNotificationAsync(
+                // Notify Citizen
+                await CreateAndSendAsync(
                     complaint.CitizenId,
                     "Complaint Assigned",
                     $"Your complaint '{complaintTitle}' has been assigned to an employee.",
                     NotificationType.Success,
                     "Complaint",
-                    complaintId);
-
-                var citizenNotification = await _notificationService.GetNotificationByIdAsync(citizenNotificationId, complaint.CitizenId);
-                if (citizenNotification != null)
-                {
-                    await _hubContext.Clients.User(complaint.CitizenId).SendAsync("ReceiveNotification", citizenNotification);
-                }
+                    complaintId
+                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send complaint assigned notification to employee {EmployeeId}", employeeId);
-                throw;
+                _logger.LogError(ex, "Failed to send assignment notification");
             }
         }
 
+        // --- 2. STATUS CHANGE ---
         public async Task SendComplaintStatusChangedNotificationAsync(string citizenId, Guid complaintId, string complaintTitle, ComplaintStatus newStatus)
         {
             try
             {
-                _logger.LogInformation("Sending complaint status changed notification to citizen {CitizenId}", citizenId);
+                var type = newStatus == ComplaintStatus.Resolved ? NotificationType.Success : NotificationType.Info;
 
-                var notificationType = newStatus == ComplaintStatus.Resolved
-                    ? NotificationType.Success
-                    : NotificationType.Info;
-
-                var notificationId = await _notificationService.CreateNotificationAsync(
+                await CreateAndSendAsync(
                     citizenId,
-                    "Complaint Status Updated",
-                    $"Your complaint '{complaintTitle}' status changed to {newStatus}.",
-                    notificationType,
+                    "Status Update",
+                    $"Your complaint '{complaintTitle}' is now {newStatus}.",
+                    type,
                     "Complaint",
-                    complaintId);
-
-                var notification = await _notificationService.GetNotificationByIdAsync(notificationId, citizenId);
-
-                if (notification != null)
-                {
-                    await _hubContext.Clients.User(citizenId).SendAsync("ReceiveNotification", notification);
-                }
+                    complaintId
+                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send complaint status changed notification to citizen {CitizenId}", citizenId);
-                throw;
+                _logger.LogError(ex, "Failed to send status notification");
             }
         }
 
+        // --- 3. DEPARTMENT CREATION ---
         public async Task SendComplaintCreatedNotificationAsync(string departmentId, string complaintTitle)
         {
             try
             {
-                _logger.LogInformation("Broadcasting complaint created notification to department {DepartmentId}", departmentId);
-                await _hubContext.Clients.Group(departmentId).SendAsync("ReceiveDepartmentMessage", $"New complaint created: {complaintTitle}");
+                if (!Enum.TryParse<Department>(departmentId, out var targetDepartment))
+                {
+                    _logger.LogWarning("Invalid Department identifier received: {Id}", departmentId);
+                    return;
+                }
+
+                _logger.LogInformation("Broadcasting complaint created notification to department {Department}", targetDepartment);
+
+                var usersToNotify = await _userManager.Users
+                    .Where(u => u.Department == targetDepartment &&
+                                (u.UserType == UserType.DepartmentManager || u.UserType == UserType.Employee))
+                    .ToListAsync();
+
+                foreach (var user in usersToNotify)
+                {
+                    await CreateAndSendAsync(
+                        user.Id,
+                        "New Department Complaint",
+                        $"A new complaint '{complaintTitle}' has been submitted to your department.",
+                        NotificationType.Warning,
+                        "Complaint",
+                        null 
+                    );
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to broadcast complaint created notification to department {DepartmentId}", departmentId);
-                throw;
+                _logger.LogError(ex, "Failed to send department notification");
             }
         }
 
-        public async Task SendComplaintAttachmentUploadedNotificationAsync(Guid complaintId, string fileName)
+        // --- 4. ATTACHMENT UPLOADED ---
+        public async Task SendComplaintAttachmentUploadedNotificationAsync(Guid complaintId, string fileName, string uploadedByUserId)
         {
-            await _hubContext.Clients.All.SendAsync("ReceiveNotification", $"Attachment {fileName} uploaded to complaint {complaintId}");
+            try
+            {
+                var complaint = await _complaintService.GetComplaintByIdAsync(complaintId);
+                if (complaint == null) return;
+
+                var uploader = await _userManager.FindByIdAsync(uploadedByUserId);
+                if (uploader == null) return;
+
+                string uploaderName = uploader.UserName ?? "A user";
+                string title = "New Attachment";
+                string message = $"{uploaderName} uploaded '{fileName}' to complaint '{complaint.Title}'";
+
+                // Notify Citizen
+                if (complaint.CitizenId != uploadedByUserId)
+                {
+                    await CreateAndSendAsync(
+                        complaint.CitizenId, title, message, NotificationType.Info, "Complaint", complaintId
+                    );
+                }
+
+                // Notify Employee
+                if (!string.IsNullOrEmpty(complaint.AssignedEmployeeId) && complaint.AssignedEmployeeId != uploadedByUserId)
+                {
+                    await CreateAndSendAsync(
+                        complaint.AssignedEmployeeId, title, message, NotificationType.Info, "Complaint", complaintId
+                    );
+                }
+
+                // Notify Department Managers
+                if (uploader.UserType != UserType.DepartmentManager)
+                {
+                    if (Enum.TryParse<Department>(complaint.DepartmentId, out var deptEnum))
+                    {
+                        var managers = await _userManager.Users
+                            .Where(u => u.Department == deptEnum && u.UserType == UserType.DepartmentManager && u.Id != uploadedByUserId)
+                            .ToListAsync();
+
+                        foreach (var manager in managers)
+                        {
+                            await CreateAndSendAsync(
+                                manager.Id, title, message, NotificationType.Info, "Complaint", complaintId
+                            );
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send attachment notification");
+            }
         }
 
+        // --- 5. NOTES ---
         public async Task SendComplaintNoteAddedNotificationAsync(Guid complaintId, string note)
         {
-            await _hubContext.Clients.All.SendAsync("ReceiveNotification", $"Note added to complaint {complaintId}: {note}");
+            try
+            {
+                var complaint = await _complaintService.GetComplaintByIdAsync(complaintId);
+                if (complaint == null) return;
+
+                string shortNote = note.Length > 30 ? note.Substring(0, 30) + "..." : note;
+
+                // Notify Employee
+                if (!string.IsNullOrEmpty(complaint.AssignedEmployeeId))
+                {
+                    await CreateAndSendAsync(
+                        complaint.AssignedEmployeeId,
+                        "New Comment",
+                        $"New comment on complaint: {shortNote}",
+                        NotificationType.Info,
+                        "Complaint",
+                        complaintId
+                    );
+                }
+
+                // Notify Citizen
+                await CreateAndSendAsync(
+                    complaint.CitizenId,
+                    "New Response",
+                    $"Update on your complaint: {shortNote}",
+                    NotificationType.Info,
+                    "Complaint",
+                    complaintId
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send note notification");
+            }
+        }
+
+        // --- 6. COMPLAINT DETAILS UPDATED ---
+        public async Task SendComplaintUpdatedNotificationAsync(Guid complaintId, string complaintTitle, string actorId)
+        {
+            try
+            {
+                var complaint = await _complaintService.GetComplaintByIdAsync(complaintId);
+                if (complaint == null) return;
+
+                var actor = await _userManager.FindByIdAsync(actorId);
+                string actorName = actor?.UserName ?? "A user";
+
+                string title = "Complaint Updated";
+                string message = $"Complaint '{complaintTitle}' was updated by {actorName}.";
+
+                // Notify Citizen
+                if (complaint.CitizenId != actorId)
+                {
+                    await CreateAndSendAsync(complaint.CitizenId, title, message, NotificationType.Info, "Complaint", complaintId);
+                }
+
+                // Notify Assigned Employee
+                if (!string.IsNullOrEmpty(complaint.AssignedEmployeeId) && complaint.AssignedEmployeeId != actorId)
+                {
+                    await CreateAndSendAsync(complaint.AssignedEmployeeId, title, message, NotificationType.Info, "Complaint", complaintId);
+                }
+
+                // Notify Department Manager(s)
+                if (actor?.UserType != UserType.DepartmentManager)
+                {
+                    if (Enum.TryParse<Department>(complaint.DepartmentId, out var deptEnum))
+                    {
+                        var managers = await _userManager.Users
+                            .Where(u => u.Department == deptEnum && u.UserType == UserType.DepartmentManager && u.Id != actorId)
+                            .ToListAsync();
+
+                        foreach (var manager in managers)
+                        {
+                            await CreateAndSendAsync(manager.Id, title, message, NotificationType.Info, "Complaint", complaintId);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send update notification");
+            }
+        }
+
+        // ==========================================
+        //  PRIVATE HELPER TO STANDARDIZE EVERYTHING
+        // ==========================================
+        private async Task CreateAndSendAsync(
+            string userId,
+            string title,
+            string message,
+            NotificationType type,
+            string relatedEntityType,
+            Guid? relatedEntityId)
+        {
+            // 1. Save to Database (Persistence)
+            var notificationId = await _notificationService.CreateNotificationAsync(
+                userId, title, message, type, relatedEntityType, relatedEntityId
+            );
+
+            // 2. Retrieve the Full DTO (Structured Object)
+            var dto = await _notificationService.GetNotificationByIdAsync(notificationId, userId);
+
+            if (dto != null)
+            {
+                // 3. Send Object to SignalR (Real-time)
+                await _hubContext.Clients.User(userId).SendAsync("ReceiveNotification", dto);
+
+                // 4. Update the Badge Count
+                var unreadCount = await _notificationService.GetUnreadCountAsync(userId);
+                await _hubContext.Clients.User(userId).SendAsync("UnreadCountUpdated", unreadCount);
+
+                // 5. Send Push Notification (Mobile)
+                await _pushNotificationService.SendNotificationAsync(userId, title, message, new Dictionary<string, string>
+                {
+                    { "type", type.ToString() },
+                    { "relatedEntityType", relatedEntityType ?? "" },
+                    { "relatedEntityId", relatedEntityId?.ToString() ?? "" },
+                    { "url", $"/complaints/{relatedEntityId}" } 
+                });
+            }
         }
     }
 }

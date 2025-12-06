@@ -21,25 +21,22 @@ public class DashboardService : IDashboardService
         var from = filter.From ?? DateTime.MinValue;
         var to = filter.To ?? DateTime.MaxValue;
 
-        // 1. User Stats (Snapshot - usually not filtered by date unless "Created Between")
-        // For "Live" dashboard, we usually want TOTAL counts. 
-        // If filtering is applied, we can interpret it as "Users Created Between X and Y"
-        // But typically dashboards show "Current Total" and "Activity Between X and Y".
-        // Let's assume Counts are TOTAL, and Activity is FILTERED.
-
+        // 1. User Stats
         var totalUsers = await _context.Users.CountAsync();
         var totalCitizens = await _context.Users.CountAsync(u => u.UserType == UserType.Citizen);
         var totalEmployees = await _context.Users.CountAsync(u => u.UserType == UserType.Employee);
         var totalManagers = await _context.Users.CountAsync(u => u.UserType == UserType.DepartmentManager);
 
-        var usersPerDept = await _context.Users
+        var usersPerDeptQuery = await _context.Users
             .Where(u => u.Department != null)
             .GroupBy(u => u.Department)
-            .Select(g => new { Dept = g.Key!.ToString()!, Count = g.Count() }) // Notice the second '!'
-            .ToDictionaryAsync(x => x.Dept, x => x.Count);
+            .Select(g => new { Dept = g.Key, Count = g.Count() })
+            .ToListAsync();
 
-        // 2. Security Stats (Filtered by Date)
-        var blacklistedCount = await _context.IpBlacklist.CountAsync(); // Current blacklist size
+        var usersPerDept = usersPerDeptQuery.ToDictionary(k => k.Dept!.ToString()!, v => v.Count);
+
+        // 2. Security Stats
+        var blacklistedCount = await _context.IpBlacklist.CountAsync();
 
         var loginAttemptsQuery = _context.LoginAttempts.AsQueryable();
         if (filter.From.HasValue) loginAttemptsQuery = loginAttemptsQuery.Where(x => x.CreatedAt >= from);
@@ -49,7 +46,7 @@ public class DashboardService : IDashboardService
         var successfulLogins = await loginAttemptsQuery.CountAsync(x => x.Success);
         var failedLogins = await loginAttemptsQuery.CountAsync(x => !x.Success);
 
-        // 3. Complaint Stats (Filtered by Date)
+        // 3. Complaint Stats (Base Query)
         var complaintsQuery = _context.Complaints.AsQueryable();
         if (filter.From.HasValue) complaintsQuery = complaintsQuery.Where(x => x.CreatedOn >= from);
         if (filter.To.HasValue) complaintsQuery = complaintsQuery.Where(x => x.CreatedOn <= to);
@@ -58,11 +55,41 @@ public class DashboardService : IDashboardService
         var solvedComplaints = await complaintsQuery.CountAsync(x => x.Status == ComplaintStatus.Resolved);
         var pendingComplaints = await complaintsQuery.CountAsync(x => x.Status == ComplaintStatus.Pending);
 
-        var complaintsPerDept = await complaintsQuery
-            .Where(c => c.DepartmentId != null) // Filter nulls if DepartmentId is nullable
+        // -------------------------------------------------------------
+        // FIX: Normalize Department Counts (Handle "0" vs "Electricity")
+        // -------------------------------------------------------------
+        var rawComplaintsPerDept = await complaintsQuery
+            .Where(c => c.DepartmentId != null)
             .GroupBy(c => c.DepartmentId)
-            .Select(g => new { Dept = g.Key!, Count = g.Count() }) // Null-forgiving
-            .ToDictionaryAsync(x => x.Dept, x => x.Count);
+            .Select(g => new { DeptString = g.Key!, Count = g.Count() })
+            .ToListAsync();
+
+        var complaintsPerDept = new Dictionary<string, int>();
+
+        foreach (var item in rawComplaintsPerDept)
+        {
+            string normalizedDeptName = item.DeptString;
+
+            // Try to parse "0", "1" etc. into "Electricity", "Water"
+            if (int.TryParse(item.DeptString, out int deptId))
+            {
+                if (Enum.IsDefined(typeof(Department), deptId))
+                {
+                    normalizedDeptName = ((Department)deptId).ToString();
+                }
+            }
+
+            // Aggregate counts
+            if (complaintsPerDept.ContainsKey(normalizedDeptName))
+            {
+                complaintsPerDept[normalizedDeptName] += item.Count;
+            }
+            else
+            {
+                complaintsPerDept[normalizedDeptName] = item.Count;
+            }
+        }
+        // -------------------------------------------------------------
 
         var complaintsByStatus = await complaintsQuery
             .GroupBy(c => c.Status)
@@ -75,7 +102,7 @@ public class DashboardService : IDashboardService
             TotalCitizens = totalCitizens,
             TotalEmployees = totalEmployees,
             TotalManagers = totalManagers,
-            UsersPerDepartment = usersPerDept, 
+            UsersPerDepartment = usersPerDept,
             BlacklistedUsers = blacklistedCount,
             LoginAttempts = loginAttempts,
             SuccessfulLogins = successfulLogins,
@@ -98,15 +125,18 @@ public class DashboardService : IDashboardService
         if (manager == null || manager.Department == null)
             throw new Exception("Manager or Department not found");
 
-        var departmentId = manager.Department.ToString();
+        // Prepare both formats ("Electricity" and "0") to query correctly
+        var deptEnum = manager.Department.Value;
+        string deptName = deptEnum.ToString();
+        string deptInt = ((int)deptEnum).ToString();
 
         // 1. Employee Stats
         var totalEmployees = await _context.Users
-            .CountAsync(u => u.UserType == UserType.Employee && u.Department == manager.Department);
+            .CountAsync(u => u.UserType == UserType.Employee && u.Department == deptEnum);
 
-        // 2. Complaint Stats (Filtered)
+        // 2. Complaint Stats (Filtered by Dept ID in both formats)
         var complaintsQuery = _context.Complaints
-            .Where(c => c.DepartmentId == departmentId);
+            .Where(c => c.DepartmentId == deptName || c.DepartmentId == deptInt);
 
         if (filter.From.HasValue) complaintsQuery = complaintsQuery.Where(x => x.CreatedOn >= from);
         if (filter.To.HasValue) complaintsQuery = complaintsQuery.Where(x => x.CreatedOn <= to);
@@ -138,11 +168,7 @@ public class DashboardService : IDashboardService
             .Select(g => new
             {
                 EmployeeId = g.Key,
-                SolvedCount = g.Count(),
-                // EF Core can't translate complex time math easily in GroupBy sometimes, 
-                // but let's try simple diff if supported, or fetch and process.
-                // For simplicity/reliability in this snippet, we might need to fetch stats or use a simpler metric.
-                // Let's stick to SolvedCount for DB query, and we can enrich names later.
+                SolvedCount = g.Count()
             })
             .OrderByDescending(x => x.SolvedCount)
             .Take(5)
@@ -151,11 +177,12 @@ public class DashboardService : IDashboardService
         var topPerformers = new List<EmployeePerformanceDto>();
         foreach (var p in topPerformersData)
         {
+            if (string.IsNullOrEmpty(p.EmployeeId)) continue;
+
             var emp = await _context.Users.Include(u => u.Profile).FirstOrDefaultAsync(u => u.Id == p.EmployeeId);
             if (emp != null)
             {
                 // Calculate avg time for this employee specifically
-                // This is an N+1 query risk but for top 5 it's negligible.
                 var empResolved = await complaintsQuery
                     .Where(c => c.AssignedEmployeeId == p.EmployeeId && c.Status == ComplaintStatus.Resolved && c.ResolvedAt.HasValue)
                     .Select(c => (c.ResolvedAt!.Value - c.CreatedOn).TotalHours)

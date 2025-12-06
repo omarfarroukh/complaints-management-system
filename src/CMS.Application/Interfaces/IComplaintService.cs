@@ -7,7 +7,7 @@ namespace CMS.Application.Interfaces
     {
         Task<ComplaintDto> CreateComplaintAsync(CreateComplaintDto dto, string citizenId);
         Task<ComplaintDto?> GetComplaintByIdAsync(Guid id);
-        Task<List<ComplaintDto>> GetComplaintsForUserAsync(string userId, string role, ComplaintFilterDto filter);
+        Task<PagedResult<ComplaintDto>> GetComplaintsForUserAsync(string userId, string role, ComplaintFilterDto filter);        
         Task AssignComplaintAsync(Guid complaintId, string employeeId, string managerId);
         Task UpdateComplaintStatusAsync(Guid complaintId, ComplaintStatus status, string userId);
         Task<Guid> AddAttachmentAsync(Guid complaintId, string filePath, string fileName, long fileSize, string mimeType, string userId);

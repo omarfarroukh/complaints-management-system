@@ -56,11 +56,11 @@ namespace CMS.Infrastructure.Services
             return complaint != null ? MapToDto(complaint) : null;
         }
 
-        public async Task<List<ComplaintDto>> GetComplaintsForUserAsync(string userId, string role, ComplaintFilterDto filter)
+        public async Task<PagedResult<ComplaintDto>> GetComplaintsForUserAsync(string userId, string role, ComplaintFilterDto filter)
         {
             var query = _context.Complaints.AsQueryable();
 
-            // Role-based base filtering
+            // --- 1. ROLE BASED SECURITY FILTERING (KEEP EXISTING) ---
             if (role == "Citizen")
             {
                 query = query.Where(c => c.CitizenId == userId);
@@ -69,12 +69,23 @@ namespace CMS.Infrastructure.Services
             {
                 query = query.Where(c => c.AssignedEmployeeId == userId);
             }
-            else if (role == "DepartmentManager" && !string.IsNullOrEmpty(filter.DepartmentId))
+            else if (role == "DepartmentManager")
+            {
+                var manager = await _context.Users.FindAsync(userId);
+                if (manager != null)
+                {
+                    string managerDept = manager.Department.ToString();
+                    query = query.Where(c => c.DepartmentId == managerDept);
+                }
+            }
+            // Admin sees everything
+
+            // --- 2. OPTIONAL FILTERS (KEEP EXISTING) ---
+            if (role == "Admin" && !string.IsNullOrEmpty(filter.DepartmentId))
             {
                 query = query.Where(c => c.DepartmentId == filter.DepartmentId);
             }
 
-            // Apply Filters
             if (!string.IsNullOrEmpty(filter.Status) && Enum.TryParse<ComplaintStatus>(filter.Status, out var status))
             {
                 query = query.Where(c => c.Status == status);
@@ -92,16 +103,12 @@ namespace CMS.Infrastructure.Services
             }
 
             if (filter.FromDate.HasValue)
-            {
                 query = query.Where(c => c.CreatedOn >= filter.FromDate.Value);
-            }
 
             if (filter.ToDate.HasValue)
-            {
                 query = query.Where(c => c.CreatedOn <= filter.ToDate.Value);
-            }
 
-            // Apply Sorting
+            // --- 3. SORTING (KEEP EXISTING) ---
             if (!string.IsNullOrEmpty(filter.SortBy))
             {
                 switch (filter.SortBy.ToLower())
@@ -120,16 +127,26 @@ namespace CMS.Infrastructure.Services
             }
             else
             {
-                // Default sort for time-series data
                 query = query.OrderByDescending(c => c.CreatedOn);
             }
 
-            return await query
+            // ✅ 4. PAGINATION - Get total BEFORE skip/take
+            var totalCount = await query.CountAsync();
+
+            // ✅ 5. Apply pagination LAST
+            query = query
+                .Skip(filter.Skip)
+                .Take(filter.Take);
+
+            // ✅ 6. Materialize only the page
+            var items = await query
                 .Include(c => c.Citizen)
                 .Include(c => c.AssignedEmployee)
                 .Include(c => c.Attachments)
                 .Select(c => MapToDto(c))
                 .ToListAsync();
+
+            return new PagedResult<ComplaintDto> { Items = items, TotalCount = totalCount };
         }
 
         public async Task AssignComplaintAsync(Guid complaintId, string employeeId, string managerId)
@@ -194,7 +211,8 @@ namespace CMS.Infrastructure.Services
             if (complaint != null)
             {
                 BackgroundJob.Enqueue<INotificationJob>(job =>
-                   job.SendComplaintAttachmentUploadedNotificationAsync(complaint.Id, fileName));
+                   // 👇 Pass 'userId' (the uploader) here
+                   job.SendComplaintAttachmentUploadedNotificationAsync(complaint.Id, fileName, userId));
             }
             return attachment.Id;
         }
@@ -272,7 +290,12 @@ namespace CMS.Infrastructure.Services
             {
                 complaint.LastModifiedOn = DateTime.UtcNow;
                 LogChange(complaint, "Details updated via PATCH", userId, oldValues);
-                await _context.SaveChangesAsync();
+
+                await _context.SaveChangesAsync(); // <--- Data is saved here
+
+                // 👇 ADD THIS BLOCK
+                BackgroundJob.Enqueue<INotificationJob>(job =>
+                    job.SendComplaintUpdatedNotificationAsync(complaint.Id, complaint.Title, userId));
             }
 
             return MapToDto(complaint);
@@ -326,6 +349,6 @@ namespace CMS.Infrastructure.Services
                 }).ToList() ?? new List<ComplaintAttachmentDto>()
             };
         }
-    
+
     }
 }
